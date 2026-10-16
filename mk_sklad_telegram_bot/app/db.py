@@ -55,7 +55,16 @@ async def pending(pool, user_id: int):
             "SELECT action_type,payload FROM pending_actions "
             "WHERE user_id=$1 AND created_at > NOW() - INTERVAL '30 minutes'", user_id
         )
-    return dict(row) if row else None
+    if row is None:
+        return None
+    # asyncpg returns JSONB as text unless a custom decoder is registered.
+    # The action handlers expect the original dictionary, not a JSON string.
+    payload = row["payload"]
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    if not isinstance(payload, dict):
+        raise ValueError("Некоректна чернетка дії; скасуйте її командою /cancel.")
+    return {"action_type": row["action_type"], "payload": payload}
 
 async def clear_pending(pool, user_id: int):
     async with pool.acquire() as conn:
