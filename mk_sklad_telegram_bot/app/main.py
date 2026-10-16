@@ -12,6 +12,7 @@ from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
 from fastapi import FastAPI, Header, HTTPException, Request
+from googleapiclient.errors import HttpError
 
 from app.ai import AssistantAI
 from app.config import Settings
@@ -170,6 +171,21 @@ async def receive_text(message: Message):
         except ValueError as error:
             await clear_pending(app.state.pool, uid)
             await message.answer(f"Не записано: {error}")
+        except HttpError as error:
+            # A permanent Sheets 400/403 must not trigger Telegram webhook retries
+            # of the same confirmation. Keep the draft for an explicit retry.
+            log.warning("Sheets rejected confirmed %s for Telegram user %s: HTTP %s",
+                        kind, uid, getattr(error.resp, "status", "unknown"))
+            await message.answer(
+                "Google Sheets не прийняв запис. У таблиці нічого не підтверджую. "
+                "Перевір права доступу й спробуй «так» ще раз або /cancel."
+            )
+        except Exception:
+            log.exception("Failed to execute confirmed action %s for Telegram user %s", kind, uid)
+            await message.answer(
+                "Помилка під час запису. Підтвердження не отримано; "
+                "перевір таблицю перед повторною спробою."
+            )
         return
     try:
         data = await ai.parse(plain)
