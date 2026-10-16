@@ -174,6 +174,23 @@ class PostgresLedger:
                  payload["role"], "", "Створено Шухером", today]
         async with self.pool.acquire() as conn:
             async with conn.transaction():
+                # Prevent accidental second order after Telegram retry or a rapid re-send.
+                # Only recent requests created by the same actor are considered duplicates.
+                if self.actor_id is not None:
+                    previous = await conn.fetchval(
+                        """SELECT r.record_key FROM ledger_records r
+                           JOIN ledger_events e ON e.sheet=r.sheet
+                             AND e.record_key=r.record_key AND e.action='create'
+                           WHERE r.sheet='Заявки' AND e.actor_id=$1
+                             AND r.created_at > NOW()-INTERVAL '15 minutes'
+                             AND lower(r.project)=lower($2)
+                             AND lower(r.title)=lower($3)
+                             AND r.cells->>6=$4 AND r.cells->>7=$5
+                           ORDER BY r.created_at DESC LIMIT 1""",
+                        self.actor_id,payload["project"],payload["item"],
+                        str(payload["quantity"]),payload["unit"])
+                    if previous:
+                        return f"Схожа заявка {previous} вже створена нещодавно; дублікат не додано."
                 added = await insert_record(conn, "Заявки", cells[0], cells,
                                             actor=self.actor_id)
         if not added:
