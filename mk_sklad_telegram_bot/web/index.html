@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#12191b">
+  <title>Шухер · МК Склад</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="/app/style.css">
+  <script src="/app/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand"><div class="symbol">Ш</div><div><strong>Шухер</strong><small>МК Склад</small></div></div>
+      <nav id="sidenav" aria-label="Розділи"></nav>
+      <div class="sidebar-bottom"><span class="status-dot"></span><span id="sideRole">Авторизація…</span></div>
+    </aside>
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar-title"><span class="eyebrow">МК / Операційна система</span><h1 id="pageTitle">Завантаження…</h1></div>
+        <div class="top-actions"><span class="user-pill" id="userPill"></span><button id="refresh" class="icon-button" title="Оновити">↻</button></div>
+      </header>
+      <div class="content">
+        <section id="overview" class="overview"></section>
+        <div class="toolbar">
+          <label class="searchbox"><span>⌕</span><input id="search" placeholder="Назва, ID, постачальник…" autocomplete="off"></label>
+          <button id="createRequest" class="button primary" hidden>＋ Заявка</button>
+        </div>
+        <div id="message" role="status"></div>
+        <section id="items" class="items" aria-live="polite"></section>
+        <div class="pager"><span id="pagination"></span><button id="more" class="button ghost" hidden>Показати ще</button></div>
+      </div>
+    </main>
+  </div>
+  <nav class="mobile-nav" id="mobileNav" aria-label="Нижня навігація"></nav>
+  <div class="overlay" id="overlay" hidden>
+    <div class="drawer" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
+      <div class="drawer-head"><div><span class="eyebrow" id="detailLabel"></span><h2 id="detailTitle"></h2></div><button class="icon-button" id="closeDetail" aria-label="Закрити">×</button></div>
+      <div id="detailBody" class="detail-body"></div>
+    </div>
+  </div>
+  <div id="toast" class="toast" role="status"></div>
+</body>
+</html>

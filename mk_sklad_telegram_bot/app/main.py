@@ -6,18 +6,22 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
+from pathlib import Path
 
 import asyncpg
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import Command, CommandStart
-from aiogram.types import Message
+from aiogram.types import Message, MenuButtonWebApp, WebAppInfo
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.staticfiles import StaticFiles
 from googleapiclient.errors import HttpError
 
 from app.ai import AssistantAI
 from app.config import Settings
 from app.db import prepare, take_update, release_update, stage, pending, clear_pending, audit
 from app.sheets import Sheets, text_number
+from app.pgstore import PostgresLedger, prepare_ledger
+from app.webapp import router as webapp_router
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("mk-sklad")
@@ -29,6 +33,12 @@ dp.include_router(router)
 sheets = Sheets(settings.spreadsheet_id, settings.google_service_account_json_b64)
 ai = AssistantAI(settings.openai_api_key, settings.openai_model)
 KYIV = ZoneInfo("Europe/Kyiv")
+
+def storage(actor_id=None):
+    if settings.data_backend == "postgres":
+        return PostgresLedger(app.state.pool, actor_id)
+    return sheets
+
 
 
 def role_of(message: Message):
@@ -81,7 +91,7 @@ async def status_context(role: str, question: str) -> str:
     terms = [t.strip(".,!?():;\"'").casefold() for t in question.split() if len(t) >= 4]
     segments = []
     for name in names:
-        rows = await sheets.read(name)
+        rows = await storage().read(name)
         matches = [r for r in rows if any(t in " ".join(map(str,r["cells"])).casefold() for t in terms)]
         selected = matches[-35:] if matches else rows[-20:]
         segments.append(json.dumps({"sheet": name, "total_rows": len(rows),
@@ -105,7 +115,7 @@ async def prepare_action(role: str, data: dict) -> tuple[str, dict]:
     if intent == "mark_paid":
         if role != "owner":
             raise ValueError("Позначати оплату підтвердженою може тільки власник.")
-        purchase = await sheets.find_purchase(data["purchase_ref"])
+        purchase = await storage().find_purchase(data["purchase_ref"])
         obj = {"purchase_id": purchase["cells"][0]}
         return f"ПІДТВЕРДЖУЄШ ФАКТИЧНУ ОПЛАТУ закупівлі {obj['purchase_id']}? (Не план, не передано на оплату)", obj
     if intent == "receive":
@@ -148,7 +158,7 @@ async def receive_text(message: Message):
         kind, data = pending_action["action_type"], pending_action["payload"]
         try:
             if kind == "create_request":
-                result = await sheets.create_request(data)
+                result = await storage(uid).create_request(data)
                 entity_id = data["request_id"]
             elif kind in {"mark_paid", "receive"}:
                 if kind == "mark_paid" and role != "owner":
@@ -159,7 +169,7 @@ async def receive_text(message: Message):
                 async with app.state.pool.acquire() as connection:
                     await connection.execute("SELECT pg_advisory_lock(hashtext($1))", data["purchase_id"])
                     try:
-                        result = await (sheets.pay(data) if kind == "mark_paid" else sheets.receive(data))
+                        result = await (storage(uid).pay(data) if kind == "mark_paid" else storage(uid).receive(data))
                     finally:
                         await connection.execute("SELECT pg_advisory_unlock(hashtext($1))", data["purchase_id"])
                 entity_id = data["purchase_id"] if kind == "mark_paid" else data["receipt_id"]
@@ -218,14 +228,24 @@ async def unsupported(message: Message):
 async def lifespan(app: FastAPI):
     app.state.pool = await asyncpg.create_pool(settings.database_url, min_size=1, max_size=5)
     await prepare(app.state.pool)
+    await prepare_ledger(app.state.pool)
     await bot.set_webhook(settings.public_base_url.rstrip("/") + "/telegram/webhook",
                           secret_token=settings.telegram_webhook_secret,
                           allowed_updates=["message"], drop_pending_updates=False)
+    if settings.enable_mini_app:
+        try:
+            await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(
+                text="Шухер · база",
+                web_app=WebAppInfo(url=settings.public_base_url.rstrip("/") + "/app/")))
+        except Exception:
+            log.exception("Failed to configure Telegram Mini App menu")
     yield
     await bot.session.close()
     await app.state.pool.close()
 
 app = FastAPI(lifespan=lifespan)
+app.include_router(webapp_router)
+app.mount("/app", StaticFiles(directory=str(Path(__file__).parent.parent / "web"), html=True), name="miniapp")
 
 @app.get("/health")
 async def health():
