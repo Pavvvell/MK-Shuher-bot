@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     owner_ids: str = ""
     buyer_ids: str = ""
     storekeeper_ids: str = ""
+    # Switch ONLY after import counts and operations have been validated.
+    data_backend: str = "sheets"
+    import_source_spreadsheet_id: str = ""
+    enable_mini_app: bool = False
 
     @staticmethod
     def parse_ids(value: str) -> set[int]:
