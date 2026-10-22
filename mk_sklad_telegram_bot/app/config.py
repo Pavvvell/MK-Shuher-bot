@@ -8,9 +8,13 @@ class Settings(BaseSettings):
     public_base_url: str
     openai_api_key: str
     openai_model: str = "gpt-4.1-mini"
-    database_url: str
+    database_url: str = ""
+    cloud_sql_instance: str = ""
+    db_user: str = ""
+    db_password: str = ""
+    db_name: str = "shuher"
     spreadsheet_id: str = "1ZSmctpTVh5NsCa4pW0acpo6CZGrddhOj9xjmTlsB03c"
-    google_service_account_json_b64: str
+    google_service_account_json_b64: str = ""
     owner_ids: str = ""
     buyer_ids: str = ""
     storekeeper_ids: str = ""
@@ -18,6 +22,7 @@ class Settings(BaseSettings):
     data_backend: str = "sheets"
     import_source_spreadsheet_id: str = ""
     enable_mini_app: bool = False
+    register_telegram_webhook: bool = True
 
     @staticmethod
     def parse_ids(value: str) -> set[int]:
