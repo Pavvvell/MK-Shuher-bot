@@ -129,7 +129,7 @@ async def prepare_action(role: str, data: dict) -> tuple[str, dict]:
             raise ValueError("Кількість має бути числом.")
         if qty <= 0:
             raise ValueError("Кількість має бути більше нуля.")
-        purchase = await sheets.find_purchase(data["purchase_ref"])
+        purchase = await storage().find_purchase(data["purchase_ref"])
         obj = {"purchase_id": purchase["cells"][0],"quantity": str(qty), "unit": data["unit"],
                "location": data["location"], "details": data["details"],
                "document": data["document"],
@@ -226,12 +226,29 @@ async def unsupported(message: Message):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.pool = await asyncpg.create_pool(settings.database_url, min_size=1, max_size=5)
+    if settings.cloud_sql_instance:
+        if not settings.db_user or not settings.db_password or not settings.db_name:
+            raise RuntimeError("Cloud SQL connection requires DB_USER, DB_PASSWORD, DB_NAME")
+        # Cloud Run's managed Cloud SQL connection mounts an authenticated Unix socket.
+        app.state.pool = await asyncpg.create_pool(
+            host=f"/cloudsql/{settings.cloud_sql_instance}",
+            database=settings.db_name,
+            user=settings.db_user,
+            password=settings.db_password,
+            min_size=1, max_size=4, command_timeout=30)
+    else:
+        if not settings.database_url:
+            raise RuntimeError("Set DATABASE_URL or CLOUD_SQL_INSTANCE")
+        app.state.pool = await asyncpg.create_pool(settings.database_url, min_size=1, max_size=5)
     await prepare(app.state.pool)
     await prepare_ledger(app.state.pool)
-    await bot.set_webhook(settings.public_base_url.rstrip("/") + "/telegram/webhook",
-                          secret_token=settings.telegram_webhook_secret,
-                          allowed_updates=["message"], drop_pending_updates=False)
+    if settings.register_telegram_webhook:
+        await bot.set_webhook(settings.public_base_url.rstrip("/") + "/telegram/webhook",
+                              secret_token=settings.telegram_webhook_secret,
+                              allowed_updates=["message"], drop_pending_updates=False)
+        log.info("Telegram webhook registered at configured Cloud Run URL")
+    else:
+        log.info("Telegram webhook registration disabled during migration")
     if settings.enable_mini_app:
         try:
             await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(
