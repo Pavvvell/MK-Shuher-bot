@@ -8,6 +8,7 @@ from datetime import datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
+import google.auth
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
@@ -26,9 +27,14 @@ def value_cell(value):
 
 class Sheets:
     def __init__(self, spreadsheet_id: str, json_b64: str):
-        data = json.loads(base64.b64decode(json_b64, validate=True))
-        self.credentials = service_account.Credentials.from_service_account_info(
-            data, scopes=["https://www.googleapis.com/auth/spreadsheets"])
+        scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+        if json_b64:
+            data = json.loads(base64.b64decode(json_b64, validate=True))
+            self.credentials = service_account.Credentials.from_service_account_info(
+                data, scopes=scopes)
+        else:
+            # Cloud Run workload identity: no long-lived Google JSON key required.
+            self.credentials, _ = google.auth.default(scopes=scopes)
         self.spreadsheet_id = spreadsheet_id
 
     def _service(self):
