@@ -1,7 +1,7 @@
 name: Шуxер quality checks
 on:
   push:
-    branches: [feature/postgres-miniapp]
+    branches: [feature/postgres-miniapp, feature/cloud-run-migration]
   pull_request:
     branches: [main]
 jobs:
