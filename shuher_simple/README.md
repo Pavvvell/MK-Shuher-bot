@@ -13,7 +13,7 @@
 
 ## Таблиці
 
-**Один Google Spreadsheet-файл** — у ньому кожна бізнес-таблиця є окремою вкладкою (sheet tab). Це дозволяє додавати їх без Google Drive OAuth та без окремих платних баз даних.
+**Один приватний Google Spreadsheet-файл** — у ньому кожна бізнес-таблиця є окремою вкладкою (sheet tab). Це дозволяє додавати їх без Google Drive OAuth та без окремих платних баз даних. **Для вимоги «лише власник бачить усі Telegram ID» цей файл має бути доступний тільки власнику та сервісному акаунту Шухера.** НІКОЛИ не ділитися ним із рядовими користувачами напряму.
 
 Сховище технічних параметрів — приховані вкладки `_Shuher_Users`, `_Shuher_Access`, `_Shuher_Pending`, `_Shuher_Updates`. Вони створюються один раз під час запуску; це НЕ бізнес-таблиці. Власник не повинен видаляти або перейменовувати їх.
 
@@ -22,11 +22,11 @@
 /create Інструмент | Найменування, Кількість, Од. вим., Статус
 /create Комуналка
 ```
-Бот автоматично додає `ID`, `Дата` та `Автор` до нових вкладок; вони потрібні для аудиту й повторної доставки повідомлень. У вже наявних вкладках можна читати дані, але **додавання через бот вимагає першої колонки `ID`** (нова структура автоматично її містить). Зміни існуючих позицій поки не підтримуються.
+Бот автоматично додає `ID`, `Дата` та `Автор`. У вже наявних вкладках додавання потребує першої колонки, назва якої починається з `ID` (`ID позиції`, `ID закупівлі` тощо); тільки перегляд працює без цього. Редагування існуючих позицій не підтримується.
 
 ## Найкоротший деплой у Google Cloud Run (без Cloud SQL)
 
-1. Проєкт GCP: `mk-shuher-bot`. У Google Sheets сервісний акаунт `shuher-sheets@mk-shuher-bot.iam.gserviceaccount.com` повинен мати **Editor** на вибраний Spreadsheet. Уже є тестова копія `1cACUDeIyCLWFMpzJ5LP-udj5jqIkZ1s_etsX5dQyHP4`; бойовий реєстр поки не зачіпати.
+1. Проєкт GCP: `mk-shuher-bot`. У новому Gmail **створи окремий приватний Google Spreadsheet «Шухер — Робочі таблиці»** і надай `shuher-sheets@mk-shuher-bot.iam.gserviceaccount.com` роль **Editor**. Не надавай доступ іншим — бот сам контролює доступ за Telegram ID. Для безпечного пробного запуску можна тимчасово використовувати стару тестову копію `1cACUDeIyCLWFMpzJ5LP-udj5jqIkZ1s_etsX5dQyHP4`, але її доступи потрібно перевірити. Бойовий реєстр поки не зачіпати.
 2. Запусти на Mac `gcloud auth login` під новим Gmail, `gcloud config set project mk-shuher-bot`.
 3. `gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com sheets.googleapis.com`.
 4. Відкрий `shuher_simple/`. Створи приватний локальний файл `deploy.env.yaml` (у .gitignore, .gcloudignore та .dockerignore). Не надсилай його в чат і не коміть:
@@ -35,35 +35,16 @@ TELEGRAM_BOT_TOKEN: "ЧИННИЙ_ТОКЕН_БОТА"
 TELEGRAM_WEBHOOK_SECRET: "ЧИННИЙ_WEBHOOK_SECRET"
 OPENAI_API_KEY: "ЧИННИЙ_OPENAI_КЛЮЧ"
 OPENAI_MODEL: "gpt-4.1-mini"
-SPREADSHEET_ID: "1cACUDeIyCLWFMpzJ5LP-udj5jqIkZ1s_etsX5dQyHP4"
+SPREADSHEET_ID: "ID_НОВОГО_ПРИВАТНОГО_SPREADSHEET"
 OWNER_IDS: "ТВІЙ_ЧИСЛОВИЙ_TELEGRAM_ID"
 REGISTER_TELEGRAM_WEBHOOK: "false"
 ```
-5. Із каталогу `shuher_simple/`:
-```sh
-gcloud run deploy shuher-lite \
-  --source . \
-  --region=europe-west3 \
-  --service-account=shuher-sheets@mk-shuher-bot.iam.gserviceaccount.com \
-  --allow-unauthenticated \
-  --cpu=1 --memory=512Mi --concurrency=1 --max-instances=1 --min-instances=0 \
-  --env-vars-file=deploy.env.yaml
-```
-6. Перевір:
-```sh
-URL=$(gcloud run services describe shuher-lite --region=europe-west3 --format='value(status.url)')
-curl "$URL/health"
-```
-Очікується `{"status":"ok","backend":"google-sheets"}`.
-7. Після успішного здоров'я, щоб **переключити саме наявного Telegram-бота**:
-```sh
-gcloud run services update shuher-lite \
-  --region=europe-west3 \
-  --update-env-vars="PUBLIC_BASE_URL=$URL,REGISTER_TELEGRAM_WEBHOOK=true"
-curl "$URL/health"
-```
-Новий сервіс зареєструє Telegram webhook на Cloud Run. Не запускай старий Railway-сервіс з автоматичною реєстрацією webhook; він може перехопити webhook назад після рестарту.
+5. Із каталогу `shuher_simple/` виконай `sh deploy.sh`. Скрипт створює Cloud Run без Cloud SQL, але **ще не перемикає Telegram**.
+6. Переконайся, що `/health` повертає `{"status":"ok","backend":"google-sheets"}`.
+7. Коли все готово — `sh activate.sh`, підтвердь словом `ACTIVATE`. Ця дія перемкне Telegram webhook на Google Cloud Run.
 8. У Telegram: `/start`, `/users`, `/create ТЕСТ-ШУХЕР | Найменування, Кількість, Одиниця`, `/use ТЕСТ-ШУХЕР`, `/add 7 гайок М12`, `так`.
+
+**Для більш детального ручного деплою** команди залишено у `deploy.sh` та `activate.sh`; вони не містять ключів.
 
 Цей бот читає дані вже наявних вкладок вибраної таблиці, нічого не мігрує. Перший запуск — тільки на тестовому Spreadsheet; після перевірки виберемо остаточний робочий файл.
 
