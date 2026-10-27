@@ -195,15 +195,17 @@ class SheetsStore:
 
     def append_record(self,table,values,record_id,author):
         headers,rows=self.read_table(table)
-        if not headers or headers[0]!="ID":
-            raise ValueError("Для запису потрібна таблиця з першою колонкою ID.")
+        if not headers or not str(headers[0]).casefold().startswith("id"):
+            raise ValueError("Для запису потрібна перша колонка ID / ID позиції / ID операції.")
         if any(row and row[0]==record_id for row in rows):
             return False
         final=[]
-        for key in headers:
-            if key=="ID":value=record_id
-            elif key=="Дата":value=now()
-            elif key=="Автор":value=author
+        for i,key in enumerate(headers):
+            label=str(key).casefold().strip()
+            if i==0:value=record_id
+            elif label in ("дата","дата й час","створено (дата і час)"):value=now()
+            elif label in ("автор","ініціатор","вніс"):value=values.get(key) or author
+            elif label=="id заявки":value=values.get(key) or record_id
             else:value=values.get(key,"")
             final.append(str(value or ""))
         self.append(table,final)
