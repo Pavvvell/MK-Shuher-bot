@@ -37,5 +37,15 @@ class NewSheetRules(unittest.TestCase):
         obj.resolve=lambda name:None
         with self.assertRaises(ValueError):obj.create_table("bad/name")
 
+    def test_numeric_quantity_and_legacy_id(self):
+        obj=SheetsStore.__new__(SheetsStore)
+        obj.read_table=lambda _: (["ID закупівлі","Найменування","Кількість замовлено","Автор"],[])
+        captured=[]
+        obj.append=lambda name,values:captured.append((name,values))
+        result=obj.append_record("Закупка",{"Найменування":"гайки","Кількість замовлено":"7"},
+                                 "SH-TEST-01","Контролер")
+        self.assertTrue(result)
+        self.assertEqual(captured[0][1],["SH-TEST-01","гайки",7,"Контролер"])
+
 if __name__=="__main__":
     unittest.main()
