@@ -215,6 +215,13 @@ class SheetsStore:
         headers,rows=self.read_table(table)
         buffer=io.StringIO()
         writer=csv.writer(buffer)
-        writer.writerow(headers)
-        writer.writerows(rows)
+        # Escape spreadsheet-formula prefixes in exported CSV files.
+        def safe(cell):
+            value=str(cell or "")
+            if value.lstrip().startswith(("=","+","-","@")):
+                return "'"+value
+            return value
+        writer.writerow([safe(c) for c in headers])
+        for row in rows:
+            writer.writerow([safe(c) for c in row])
         return ("\ufeff"+buffer.getvalue()).encode("utf-8")
