@@ -212,7 +212,7 @@ class SheetsStore:
             if isinstance(value,str) and any(word in label for word in
                     ("кількіст","ціна","сума","залишок","наявно","вартіст")):
                 normalized=value.strip().replace(" ","").replace(",",".")
-                if re.fullmatch(r"-?\\d+(?:\\.\\d+)?",normalized):
+                if re.fullmatch(r"-?\d+(?:\.\d+)?",normalized):
                     value=float(normalized) if "." in normalized else int(normalized)
             final.append(value if isinstance(value,(int,float)) else str(value))
         self.append(table,final)
