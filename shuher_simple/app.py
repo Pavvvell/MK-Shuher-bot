@@ -311,8 +311,10 @@ async def handle_message(update):
             return
         force=None
         if text.lower().startswith("/ask "):
-            force="read";text=text[5:].strip()
-        elif text.lower().startswith("/add "):
+            table,_=await sheet(choose,uid,"")
+            await send(chat,await read_answer(uid,table,text[5:].strip()))
+            return
+        if text.lower().startswith("/add "):
             force="append";text=text[5:].strip()
         table,mode=await sheet(choose,uid,"")
         # Ordinary language is interpreted only within the currently selected table.
