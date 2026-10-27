@@ -72,10 +72,12 @@ async def notify_owners(uid,person):
         except Exception:
             log.exception("Cannot notify owner of registration")
 
-async def ask_model(messages,max_tokens=500):
-    response=await openai.chat.completions.create(
-        model=settings.openai_model,messages=messages,max_tokens=max_tokens,
-        temperature=0)
+async def ask_model(messages,max_tokens=500,json_mode=False):
+    params={"model":settings.openai_model,"messages":messages,
+            "max_tokens":max_tokens,"temperature":0}
+    if json_mode:
+        params["response_format"]={"type":"json_object"}
+    response=await openai.chat.completions.create(**params)
     return response.choices[0].message.content or ""
 
 def user_label(user):
@@ -122,7 +124,7 @@ async def parse_request(text,table,available,force=None):
     parsed=await ask_model([
         {"role":"system","content":system},
         {"role":"user","content":text+"\nПРИМУСОВИЙ_РЕЖИМ: "+(force or "auto")}
-    ],max_tokens=650)
+    ],max_tokens=650,json_mode=True)
     try:
         obj=json.loads(parsed)
     except (ValueError,TypeError):
