@@ -1,0 +1,10 @@
+.git
+.gitignore
+.env
+.env.*
+deploy.env.yaml
+__pycache__/
+*.pyc
+.venv/
+credentials.json
+*secret*.json
