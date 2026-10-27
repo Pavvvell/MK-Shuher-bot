@@ -207,7 +207,14 @@ class SheetsStore:
             elif label in ("автор","ініціатор","вніс"):value=values.get(key) or author
             elif label=="id заявки":value=values.get(key) or record_id
             else:value=values.get(key,"")
-            final.append(str(value or ""))
+            if value is None:value=""
+            # Keep stock quantities and prices numeric inside Google Sheets.
+            if isinstance(value,str) and any(word in label for word in
+                    ("кількіст","ціна","сума","залишок","наявно","вартіст")):
+                normalized=value.strip().replace(" ","").replace(",",".")
+                if re.fullmatch(r"-?\\d+(?:\\.\\d+)?",normalized):
+                    value=float(normalized) if "." in normalized else int(normalized)
+            final.append(value if isinstance(value,(int,float)) else str(value))
         self.append(table,final)
         return True
 
