@@ -1,0 +1,8 @@
+deploy.env.yaml
+.env
+.env.*
+__pycache__/
+*.pyc
+.venv/
+credentials.json
+*secret*.json
