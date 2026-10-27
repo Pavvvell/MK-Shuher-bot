@@ -13,6 +13,7 @@ class Helpers(unittest.TestCase):
 class NewSheetRules(unittest.TestCase):
     def test_create_requires_owner_command_style_headers(self):
         obj=SheetsStore.__new__(SheetsStore)
+        obj.id="TEST_SPREADSHEET_ID"
         obj.resolve=lambda name:None
         self.sent=[]
         class FakeValues:
