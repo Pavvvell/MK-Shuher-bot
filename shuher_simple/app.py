@@ -131,7 +131,8 @@ async def parse_request(text,table,available,force=None,history=""):
     )
     parsed=await ask_model([
         {"role":"system","content":system},
-        {"role":"user","content":"Попередня розмова:\n"+str(history)[-2300:]+\n            "\nНове повідомлення: "+text+"\nПРИМУСОВИЙ_РЕЖИМ: "+(force or "auto")}
+        {"role":"user","content":"Попередня розмова:\n"+str(history)[-2300:]+
+            "\nНове повідомлення: "+text+"\nПРИМУСОВИЙ_РЕЖИМ: "+(force or "auto")}
     ],max_tokens=650,json_mode=True)
     try:
         obj=json.loads(parsed)
