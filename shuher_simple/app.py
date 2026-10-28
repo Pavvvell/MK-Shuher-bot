@@ -16,6 +16,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from store import SheetsStore
 from business import today_procurement, positive_quantity
+from company import build_company_context
 from dialogue import queue_photo, remember_exchange, history_excerpt
 from media import (MAX_PHOTO_BYTES, telegram_file_bytes, transcribe_telegram_voice)
 from natural import interpret_natural, status_candidates, status_selection_text
@@ -187,7 +188,8 @@ CHAT_SYSTEM=(
 
 async def chat_answer(uid,chat,text):
     """Open-ended GPT dialogue with bounded history and queued Telegram photos."""
-    if not await sheet(permission,uid):
+    access=await sheet(permission,uid)
+    if not access:
         await send(chat,"Для роботи з Шухером спочатку потрібен доступ від власника. "
                         "Напиши /start, щоб він побачив твій ID.")
         return
@@ -201,7 +203,8 @@ async def chat_answer(uid,chat,text):
             bot_call,settings.telegram_bot_token,item["file_id"],MAX_PHOTO_BYTES)
         url="data:"+item.get("mime","image/jpeg")+";base64,"+base64.b64encode(data).decode("ascii")
         content.append({"type":"image_url","image_url":{"url":url,"detail":"auto"}})
-    messages=[{"role":"system","content":CHAT_SYSTEM}]
+    messages=[{"role":"system","content":
+               CHAT_SYSTEM+"\n\n"+build_company_context(uid in owners,access)}]
     for item in state["history"]:
         messages.append({"role":item["role"],"content":item["content"]})
     messages.append({"role":"user","content":content if pictures else input_text[:4200]})
@@ -335,6 +338,14 @@ async def handle_command(uid,chat,person,text):
     owner=uid in owners
 
     if cmd in ("/start","/help"):
+        if cmd=="/start":
+            try:
+                # A legacy user-specific Web App menu overrides the global
+                # menu; replace it with the regular commands menu.
+                await bot_call("setChatMenuButton",{
+                    "chat_id":chat,"menu_button":{"type":"commands"}})
+            except Exception:
+                log.exception("Unable to clear legacy menu for user %s",uid)
         intro=("Привіт! Я Шухер. Можеш просто писати мені, як ChatGPT: "
                "ставити запитання, обговорювати інструмент, надсилати фото й голосові. "
                "Команди та ID не потрібні для звичайної розмови.\n\n"
@@ -652,6 +663,20 @@ async def handle_message(update):
 @asynccontextmanager
 async def lifespan(app:FastAPI):
     await sheet(store.bootstrap)
+    # Old bot installations might still have a persistent Mini App button.
+    # Set both the global menu and owners' per-chat overrides to commands.
+    # Failures must never stop an otherwise healthy Cloud Run container.
+    try:
+        await bot_call("setChatMenuButton",{
+            "menu_button":{"type":"commands"}})
+    except Exception:
+        log.exception("Cannot reset global legacy Mini App menu")
+    for owner_id in owners:
+        try:
+            await bot_call("setChatMenuButton",{
+                "chat_id":owner_id,"menu_button":{"type":"commands"}})
+        except Exception:
+            log.exception("Cannot reset legacy Mini App menu for owner %s",owner_id)
     if settings.register_telegram_webhook:
         if not settings.public_base_url.startswith("https://"):
             raise RuntimeError("Set PUBLIC_BASE_URL to your real HTTPS Cloud Run URL")
