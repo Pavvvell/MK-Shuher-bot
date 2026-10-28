@@ -54,6 +54,7 @@ class PureRules(unittest.TestCase):
 class IntegrationRules(unittest.TestCase):
     def new_store(self):
         obj = SheetsStore.__new__(SheetsStore)
+        obj.id = "TEST_SPREADSHEET_ID"
         obj.resolve = lambda title: title
         return obj
 
