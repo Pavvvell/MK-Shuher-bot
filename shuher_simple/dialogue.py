@@ -33,19 +33,22 @@ def normalize_dialogue(raw):
             if isinstance(photo, dict) and isinstance(photo.get("file_id"), str):
                 file_id = photo["file_id"].strip()
                 if 0 < len(file_id) <= 320:
-                    state["photos"].append({"file_id": file_id, "group": str(photo.get("group") or "")[:140]})
+                    state["photos"].append({"file_id": file_id, "group": str(photo.get("group") or "")[:140],
+                                            "mime": photo.get("mime") if photo.get("mime") in
+                                            ("image/jpeg","image/png","image/webp") else "image/jpeg"})
     state["notes"] = str(raw.get("notes") or "")[:1600]
     return state
 
 
-def queue_photo(state, file_id, group="", caption=""):
+def queue_photo(state, file_id, group="", caption="", mime="image/jpeg"):
     state = normalize_dialogue(state)
     if any(p["file_id"] == file_id for p in state["photos"]):
         return state, False
     if len(state["photos"]) >= MAX_PHOTOS:
         raise ValueError("Можна додати максимум 6 фото за одне обговорення. Напиши питання до них або /new.")
     was_empty = not state["photos"]
-    state["photos"].append({"file_id": str(file_id), "group": str(group or "")[:140]})
+    state["photos"].append({"file_id": str(file_id), "group": str(group or "")[:140],
+                            "mime": mime if mime in ("image/jpeg","image/png","image/webp") else "image/jpeg"})
     if caption:
         note = str(caption).strip()
         if note and note not in state["notes"]:
