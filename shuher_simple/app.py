@@ -231,8 +231,10 @@ async def handle_command(uid,chat,person,text):
                "/id — твій ID; /tables — доступні таблиці; "
                "/use Назва — вибрати; /ask запит — запитати GPT; "
                "/add опис — додати з підтвердженням; /cancel — скасувати; "
-               "/export — завантажити таблицю; /status ID | Статус | Нове значення — змінити статус; "
-               "/balance [назва] — залишки складу.")
+               "/export — завантажити таблицю; /balance — залишки складу.\n"
+               "Можна писати звичайною мовою, наприклад: «болти М8×30 вже замовили», "
+               "«гайки оплатили», «покажи залишок болтів». "
+               "Якщо позицій кілька, Шухер запропонує вибір.")
         if owner:
             intro+=("\n\nКерування лише для власника:\n"
                     "/users — усі користувачі та їхні ID\n"
@@ -401,6 +403,25 @@ async def handle_message(update):
                 await send(chat,"Невідома команда. /help")
                 return
         pending=await sheet(store.get_pending,uid)
+        if pending and pending["payload"].get("kind")=="status_pick":
+            payload=pending["payload"]
+            if text.casefold() in ("ні","нет","no","скасувати"):
+                await sheet(store.clear_pending,uid)
+                await send(chat,"Скасовано, нічого не змінено.")
+                return
+            if text.isdigit():
+                index=int(text)-1
+                options=payload["candidates"]
+                if not 0<=index<len(options):
+                    await send(chat,"Відповідай номером від 1 до "+str(len(options))+".")
+                    return
+                await sheet(store.clear_pending,uid)
+                chosen=options[index]
+                await stage_status(uid,chat,pending["table"],chosen["id"],
+                                   payload["field"],payload["value"],chosen["label"])
+                return
+            await send(chat,"Вибери номер позиції зі списку або «ні» для скасування.")
+            return
         if pending and text.casefold() in ("так","да","yes","підтверджую"):
             table,mode=await sheet(choose,uid,pending["table"])
             if mode!="write":
@@ -441,6 +462,8 @@ async def handle_message(update):
             return
         if text.lower().startswith("/add "):
             force="append";text=text[5:].strip()
+        if force is None and await handle_natural(uid,chat,text):
+            return
         table,mode=await sheet(choose,uid,"")
         # Ordinary language is interpreted only within the currently selected table.
         intent,values,question=await parse_request(text,table,list((await sheet(permission,uid))),force)
