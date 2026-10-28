@@ -277,10 +277,14 @@ async def stage_status(uid,chat,table,record_id,field,value,label=""):
                "Підтверди: так / ні.")
 
 
-async def handle_natural(uid,chat,text):
-    """Understand ordinary phrases without requiring an ID or vertical bars."""
+async def handle_natural(uid,chat,person,text):
+    """Classify normal messages; only explicit operations trigger confirmations."""
     access=await sheet(permission,uid)
-    action=await interpret_natural(text,access,uid in owners,ask_model)
+    if not access:
+        return False
+    state=await sheet(store.get_dialogue,uid)
+    action=await interpret_natural(text,access,uid in owners,ask_model,
+                                   history_excerpt(state))
     intent=action["intent"]
     if intent=="other":
         return False
@@ -291,6 +295,12 @@ async def handle_natural(uid,chat,text):
         return True
     if intent=="balance":
         await send(chat,await sheet(store.balances,action["target"]))
+        return True
+    if intent=="read":
+        await send(chat,await read_answer(uid,action["table"],text))
+        return True
+    if intent=="append":
+        await stage_append(uid,chat,person,action["table"],text)
         return True
     table=action["table"]
     description=action["target"]
@@ -316,6 +326,7 @@ async def handle_natural(uid,chat,text):
     chosen=candidates[0]
     await stage_status(uid,chat,table,chosen["id"],action["field"],action["value"],chosen["label"])
     return True
+
 
 async def handle_command(uid,chat,person,text):
     first,_,arg=text.partition(" ")
