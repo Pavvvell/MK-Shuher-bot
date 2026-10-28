@@ -1,5 +1,6 @@
 """Шухер Lite: Telegram + OpenAI + Google Sheets. No database or Mini App."""
 import asyncio
+import base64
 import json
 import logging
 import re
@@ -14,7 +15,9 @@ from openai import AsyncOpenAI
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from store import SheetsStore
-from business import today_procurement
+from business import today_procurement, positive_quantity
+from dialogue import queue_photo, remember_exchange, history_excerpt
+from media import (MAX_PHOTO_BYTES, telegram_file_bytes, transcribe_telegram_voice)
 from natural import interpret_natural, status_candidates, status_selection_text
 
 logging.basicConfig(level=logging.INFO)
@@ -106,7 +109,7 @@ def choose(uid,desired):
         return name,available[name]
     raise ValueError("Вибери таблицю командою /use НазваТаблиці.")
 
-async def parse_request(text,table,available,force=None):
+async def parse_request(text,table,available,force=None,history=""):
     system=(
         "Ти маршрутизатор складського Telegram-бота Шухер. "
         "Відповідай ЛИШЕ JSON-об'єктом з ключами "
@@ -114,9 +117,12 @@ async def parse_request(text,table,available,force=None):
         "values (об'єкт колонка:значення), question (запит користувача). "
         "НІКОЛИ не створюй таблиці, не змінюй права користувачів і не видаляй записи. "
         "Створення таблиць можливе тільки командою власника /create. "
-        "Якщо прохання схоже на новий запис, intent='append'; "
-        "пошук/перелік/питання -> 'read'. Якщо сумнів — 'read'. "
-        "Не вигадуй значення, яких не сказав користувач. "
+        "Готуй новий запис ТІЛЬКИ якщо його попросили. "
+        "Намір консультативний або обговорення варіантів — other. "
+        "Пошук/перелік даних — read. Якщо сумнів — other. "
+        "Не вигадуй значення, яких немає в повідомленні або попередньому діалозі. "
+        "Коли користувач каже 'оформляй', бери уточнені характеристики "
+        "із його попереднього діалогу, але не вигадуй чисел. "
         "Для append вказуй лише назви колонок із переданого списку. "
         "Колонки ID, Дата й Автор заповнить сервер. "
         "Доступні таблиці: "+json.dumps(list(available),ensure_ascii=False)+". "
@@ -125,7 +131,7 @@ async def parse_request(text,table,available,force=None):
     )
     parsed=await ask_model([
         {"role":"system","content":system},
-        {"role":"user","content":text+"\nПРИМУСОВИЙ_РЕЖИМ: "+(force or "auto")}
+        {"role":"user","content":"Попередня розмова:\n"+str(history)[-2300:]+\n            "\nНове повідомлення: "+text+"\nПРИМУСОВИЙ_РЕЖИМ: "+(force or "auto")}
     ],max_tokens=650,json_mode=True)
     try:
         obj=json.loads(parsed)
