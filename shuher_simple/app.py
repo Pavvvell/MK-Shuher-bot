@@ -199,7 +199,7 @@ async def chat_answer(uid,chat,text):
     for item in pictures:
         data=await telegram_file_bytes(
             bot_call,settings.telegram_bot_token,item["file_id"],MAX_PHOTO_BYTES)
-        url="data:image/jpeg;base64,"+base64.b64encode(data).decode("ascii")
+        url="data:"+item.get("mime","image/jpeg")+";base64,"+base64.b64encode(data).decode("ascii")
         content.append({"type":"image_url","image_url":{"url":url,"detail":"auto"}})
     messages=[{"role":"system","content":CHAT_SYSTEM}]
     for item in state["history"]:
@@ -339,11 +339,13 @@ async def handle_command(uid,chat,person,text):
                "коротка відповідь або /export (CSV-файл).\n"
                "/id — твій ID; /tables — доступні таблиці; "
                "/use Назва — вибрати; /ask запит — запитати GPT; "
-               "/add опис — додати з підтвердженням; /cancel — скасувати; "
-               "/export — завантажити таблицю; /balance — залишки складу.\n"
-               "Можна писати звичайною мовою, наприклад: «болти М8×30 вже замовили», "
-               "«гайки оплатили», «покажи залишок болтів». "
-               "Якщо позицій кілька, Шухер запропонує вибір.")
+               "/add опис — додати заявку; /cancel — скасувати чернетку; "
+               "/new — нова розмова; /analyze — проаналізувати додані фото; "
+               "/export — завантажити таблицю.\n"
+               "Просто пиши, як у звичайний ChatGPT, надсилай фото або голосове. "
+               "Наприклад: «який диск краще для сталі 3 мм?», "
+               "«болти М8×30 замовили», «оформляй заявку». "
+               "Будь-який запис — тільки після твого «так».")
         if owner:
             intro+=("\n\nКерування лише для власника:\n"
                     "/users — усі користувачі та їхні ID\n"
@@ -385,6 +387,18 @@ async def handle_command(uid,chat,person,text):
         table,_=await sheet(choose,uid,arg)
         await sheet(store.set_active,uid,table)
         await send(chat,f"Обрана таблиця: {table}. Тепер можеш запитувати або /add.")
+        return
+    if cmd in ("/new","/clear"):
+        await sheet(store.clear_pending,uid)
+        await sheet(store.clear_dialogue,uid)
+        await send(chat,"Нова розмова. Попередній контекст і фото очищено, таблиці не змінені.")
+        return
+    if cmd=="/analyze":
+        state=await sheet(store.get_dialogue,uid)
+        if not state["photos"]:
+            await send(chat,"Немає фото для аналізу. Надішли їх спочатку.")
+            return
+        await chat_answer(uid,chat,arg or "Проаналізуй надіслані фото й підписи.")
         return
     if cmd=="/cancel":
         await sheet(store.clear_pending,uid)
