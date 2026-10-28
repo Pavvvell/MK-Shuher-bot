@@ -15,6 +15,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from store import SheetsStore
 from business import today_procurement
+from natural import interpret_natural, status_candidates, status_selection_text
 
 logging.basicConfig(level=logging.INFO)
 log=logging.getLogger("shuher-lite")
@@ -157,6 +158,66 @@ async def read_answer(uid,table,question):
         {"role":"user","content":"Запит: "+question+"\nДані: "+json.dumps(payload,ensure_ascii=False)[:18500]}
     ],max_tokens=800)
     return answer[:3300]
+
+
+async def stage_status(uid,chat,table,record_id,field,value,label=""):
+    """Save an explicit, user-confirmed, single-cell status change."""
+    resolved,mode=await sheet(choose,uid,table)
+    if mode!="write":
+        raise ValueError("Для зміни статусу потрібен доступ на запис.")
+    field,value,old=await sheet(store.prepare_status,resolved,record_id,field,value)
+    if value==old:
+        await send(chat,"Цей статус уже встановлено. Нічого не змінено.")
+        return
+    await sheet(store.save_pending,uid,resolved,{
+        "kind":"status","record_id":record_id,"field":field,
+        "value":value,"expected_old":old,
+    })
+    title=(label+"\n") if label else ""
+    await send(chat,f"Змінити «{resolved}»?\n"+title+
+               f"ID: {record_id}\n{field}: {old or 'порожньо'} → {value}\n"+
+               "Підтверди: так / ні.")
+
+
+async def handle_natural(uid,chat,text):
+    """Understand ordinary phrases without requiring an ID or vertical bars."""
+    access=await sheet(permission,uid)
+    action=await interpret_natural(text,access,uid in owners,ask_model)
+    intent=action["intent"]
+    if intent=="other":
+        return False
+    if intent=="today":
+        headers,rows=await sheet(store.read_table,"Закупка")
+        date=datetime.now(KYIV).strftime("%d.%m.%Y")
+        await send(chat,today_procurement(headers,rows,date))
+        return True
+    if intent=="balance":
+        await send(chat,await sheet(store.balances,action["target"]))
+        return True
+    table=action["table"]
+    description=action["target"]
+    if not description:
+        await send(chat,"Яку саме позицію потрібно змінити? Вкажи назву або розмір.")
+        return True
+    headers,rows=await sheet(store.read_table,table)
+    candidates=status_candidates(headers,rows,description)
+    if not candidates:
+        await send(chat,"Не знайшов позиції «"+description+"» у «"+table+
+                   "». Уточни найменування, розмір або проєкт.")
+        return True
+    if len(candidates)>8:
+        await send(chat,"Знайшов багато схожих позицій. Уточни розмір або проєкт.")
+        return True
+    if len(candidates)>1:
+        await sheet(store.save_pending,uid,table,{
+            "kind":"status_pick","field":action["field"],"value":action["value"],
+            "candidates":candidates,
+        })
+        await send(chat,status_selection_text(candidates))
+        return True
+    chosen=candidates[0]
+    await stage_status(uid,chat,table,chosen["id"],action["field"],action["value"],chosen["label"])
+    return True
 
 async def handle_command(uid,chat,person,text):
     first,_,arg=text.partition(" ")
