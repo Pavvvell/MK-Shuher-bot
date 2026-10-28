@@ -14,6 +14,7 @@ from openai import AsyncOpenAI
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from store import SheetsStore
+from business import today_procurement
 
 logging.basicConfig(level=logging.INFO)
 log=logging.getLogger("shuher-lite")
@@ -169,10 +170,12 @@ async def handle_command(uid,chat,person,text):
                "/id — твій ID; /tables — доступні таблиці; "
                "/use Назва — вибрати; /ask запит — запитати GPT; "
                "/add опис — додати з підтвердженням; /cancel — скасувати; "
-               "/export — завантажити таблицю.")
+               "/export — завантажити таблицю; /status ID | Статус | Нове значення — змінити статус; "
+               "/balance [назва] — залишки складу.")
         if owner:
             intro+=("\n\nКерування лише для власника:\n"
                     "/users — усі користувачі та їхні ID\n"
+                    "/today — сьогоднішні заявки у закупівлю\n"
                     "/create Назва | Колонка1, Колонка2 — створити вкладку\n"
                     "/grant ID read Назва — лише перегляд\n"
                     "/grant ID write Назва — перегляд і додавання\n"
@@ -214,6 +217,52 @@ async def handle_command(uid,chat,person,text):
     if cmd=="/cancel":
         await sheet(store.clear_pending,uid)
         await send(chat,"Незавершений запис скасовано.")
+        return
+
+    if cmd=="/today":
+        if not owner:
+            await send(chat,"Підсумок усіх закупівель доступний тільки власнику.")
+            return
+        headers,rows=await sheet(store.read_table,"Закупка")
+        date=datetime.now(KYIV).strftime("%d.%m.%Y")
+        await send(chat,today_procurement(headers,rows,date))
+        return
+    if cmd=="/balance":
+        accessible=await sheet(permission,uid)
+        if "Склад" not in accessible:
+            await send(chat,"Немає доступу до складських залишків.")
+            return
+        await send(chat,await sheet(store.balances,arg))
+        return
+    if cmd=="/status":
+        table,mode=await sheet(choose,uid,"")
+        if mode!="write":
+            await send(chat,"Для зміни статусу потрібен доступ на запис до вибраної таблиці.")
+            return
+        parts=[x.strip() for x in arg.split("|")]
+        if len(parts)==2:
+            record_id,proposed=parts
+            field="Статус"
+        elif len(parts)==3:
+            record_id,field,proposed=parts
+        else:
+            await send(chat,"Формат: /status ID | Новий статус\n"
+                            "Для закупівлі: /status ID | Статус замовлення | В дорозі\n"
+                            "Або: /status ID | Статус оплати | Оплачено")
+            return
+        if not record_id or not field or not proposed:
+            raise ValueError("Заповни ID, поле та новий статус.")
+        field,proposed,old=await sheet(store.prepare_status,table,record_id,field,proposed)
+        if proposed==old:
+            await send(chat,"Цей статус уже встановлено. Нічого не змінено.")
+            return
+        await sheet(store.save_pending,uid,table,{
+            "kind":"status","record_id":record_id,"field":field,
+            "value":proposed,"expected_old":old,
+        })
+        await send(chat,f"Змінити «{table}», ID {record_id}?\n"
+                        f"{field}: {old or 'порожньо'} → {proposed}\n"
+                        "Відповідай «так» або «ні». Чернетка діє 30 хв.")
         return
     if cmd=="/export":
         table,_=await sheet(choose,uid,arg)
@@ -297,11 +346,24 @@ async def handle_message(update):
                 await send(chat,"Право запису вже відкликано. /cancel")
                 return
             payload=pending["payload"]
-            added=await sheet(store.append_record,table,payload["values"],
-                              payload["record_id"],user_label(person))
+            if payload.get("kind")=="status":
+                changed=await sheet(store.update_status,table,payload["record_id"],
+                                    payload["field"],payload["value"],payload["expected_old"])
+                await sheet(store.clear_pending,uid)
+                await send(chat,("Статус оновлено. ID "+payload["record_id"]+
+                                 ": "+payload["field"]+" → "+payload["value"])
+                           if changed else "Цей статус уже встановлено.")
+                return
+            added,linked=await sheet(store.append_workflow,table,payload["values"],
+                                    payload["record_id"],user_label(person))
             await sheet(store.clear_pending,uid)
-            await send(chat,("Запис додано в «"+table+"». ID "+payload["record_id"])
-                       if added else "Цей запис уже є в таблиці. Дублікат не створено.")
+            if table=="Заявки":
+                await send(chat,"Заявка "+payload["record_id"]+
+                           " записана й автоматично пов'язана із закупівлею ZK-"+
+                           payload["record_id"]+("." if linked else " (зв'язок уже існував)."))
+            else:
+                await send(chat,("Запис додано в «"+table+"». ID "+payload["record_id"])
+                           if added else "Цей запис уже є в таблиці. Дублікат не створено.")
             return
         if pending and text.casefold() in ("ні","нет","no","скасувати"):
             await sheet(store.clear_pending,uid)
