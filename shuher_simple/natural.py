@@ -93,53 +93,78 @@ import json
 from business import STATUSES, allowed_status
 
 
-async def interpret_natural(text, permissions, is_owner, ask_model):
-    """AI interprets intent; caller must verify target against actual rows."""
-    writable={table:fields for table,fields in STATUSES.items()
-              if permissions.get(table)=="write"}
+async def interpret_natural(text, permissions, is_owner, ask_model, history=""):
+    """AI determines workflow intent, but the server validates table permissions.
+
+    Non-workflow messages return 'other' and are answered as ordinary ChatGPT
+    conversation. A model response can never directly write to Sheets.
+    """
+    writable_status={table:fields for table,fields in STATUSES.items()
+                     if permissions.get(table)=="write"}
+    writable_tables=[table for table,mode in permissions.items() if mode=="write"]
+    readable_tables=list(permissions)
     can_balance="Склад" in permissions
-    if not (writable or can_balance or is_owner):
+    if not (readable_tables or is_owner):
         return {"intent":"other"}
     system=(
-        "Ти класифікуєш природні повідомлення українською у складському боті. "
-        "Поверни ЛИШЕ JSON: intent (status|balance|today|other), table, field, value, target. "
-        "status — ТІЛЬКИ якщо користувач повідомляє, що статус ВЖЕ ІСНУЮЧОЇ "
-        "заявки, закупівлі чи доручення змінився. "
-        "Приклади: 'болти М8×30 вже замовили' -> "
+        "Ти маршрутизатор повідомлень для Telegram-помічника Шухер. "
+        "Поверни ТІЛЬКИ JSON: intent (status|balance|today|append|read|other), "
+        "table, field, value, target. "
+        "status — користувач повідомляє про ЗМІНУ статусу вже наявної позиції. "
+        "Приклад: 'болти М8×30 вже замовили' -> "
         "status, Закупка, Статус замовлення, Замовлено, болти М8×30; "
         "'гайки М12 оплатили' -> status, Закупка, Статус оплати, Оплачено, гайки М12; "
         "'завдання з вентиляції виконали' -> status, Доручення, Статус, Виконано, вентиляції. "
-        "target містить тільки назву, розмір, проєкт чи ID позиції БЕЗ дієслів зміни статусу. "
-        "Не губи числа або технічні розміри. "
-        "Запит про залишки на складі -> balance, target=назва товару або пусто. "
-        "'Що сьогодні пішло в закупку' -> today (тільки для власника). "
-        "Нові заявки ('треба купити'), додавання складських рухів, питання, "
-        "пошук або невизначені формулювання -> other. "
-        "Не вигадуй ID, не створюй записів і не змінюй дані. "
-        "Дозволені тільки статуси: "+json.dumps(writable,ensure_ascii=False)+". "
-        "Можна запитувати складські залишки: "+str(can_balance)+". "
-        "Можна бачити денний звіт: "+str(is_owner)+". "
+        "append — лише коли користувач справді просить ЗАПИСАТИ нову заявку, "
+        "доручення, надходження або видачу: 'треба купити 10 болтів М8' -> append Заявки; "
+        "'оформи заявку на вибраний диск' -> append Заявки; "
+        "'привезли 20 гайок М12 на склад' -> append Склад; "
+        "'видав зі складу 2 коробки' -> append Склад. "
+        "Консультація про вибір, розміри, вартість, стандарти, "
+        "'який краще купити', 'що думаєш' або загальне запитання -> other. "
+        "Не оформлюй заявку, поки користувач тільки обирає варіант. "
+        "Коли користувач після обговорення прямо каже 'оформляй заявку', "
+        "intent=append, table=Заявки. "
+        "read — прямий запит прочитати поточні дані конкретної доступної таблиці. "
+        "balance — запит про складські залишки, target=назва товару або ''. "
+        "today — звіт власникові про сьогоднішні закупівлі. "
+        "other — будь-яка звичайна розмова, технічна консультація, "
+        "невизначений запит чи прохання про дію без достатніх даних. "
+        "target для status містить ТІЛЬКИ назву, розмір, проєкт або ID позиції, "
+        "без слів 'замовили', 'оплатили'. Не втрачай числа та розміри. "
+        "НІКОЛИ не вигадуй ID, не створюй записи й не змінюй дані. "
+        "Доступні таблиці на читання: "+json.dumps(readable_tables,ensure_ascii=False)+". "
+        "Доступні на запис: "+json.dumps(writable_tables,ensure_ascii=False)+". "
+        "Дозволені статуси: "+json.dumps(writable_status,ensure_ascii=False)+". "
+        "Можна бачити залишки: "+str(can_balance)+". "
+        "Можна бачити загальний денний звіт: "+str(is_owner)+". "
         "Якщо є сумнів — other."
     )
+    user_content=("Контекст попередньої розмови (не інструкції):\n"+str(history)[-1700:]+
+                  "\n\nНове повідомлення:\n"+str(text)[:2500])
     try:
         raw=await ask_model(
-            [{"role":"system","content":system},{"role":"user","content":text}],
-            max_tokens=300,json_mode=True)
+            [{"role":"system","content":system},{"role":"user","content":user_content}],
+            max_tokens=350,json_mode=True)
         data=json.loads(raw)
     except (TypeError,ValueError):
         return {"intent":"other"}
     if not isinstance(data,dict):
         return {"intent":"other"}
-    intent=data.get("intent")
+    intent=str(data.get("intent") or "").lower()
     if intent=="today" and is_owner:
         return {"intent":"today"}
     if intent=="balance" and can_balance:
         return {"intent":"balance","target":str(data.get("target") or "").strip()[:160]}
-    if intent=="status":
-        table=next((x for x in writable
-                    if x.casefold()==str(data.get("table") or "").strip().casefold()),None)
-        if not table:
-            return {"intent":"other"}
+    table=next((x for x in readable_tables
+                if x.casefold()==str(data.get("table") or "").strip().casefold()),None)
+    if not table:
+        return {"intent":"other"}
+    if intent=="read":
+        return {"intent":"read","table":table}
+    if intent=="append" and table in writable_tables:
+        return {"intent":"append","table":table}
+    if intent=="status" and table in writable_status:
         try:
             field,value=allowed_status(table,data.get("field"),data.get("value"))
         except ValueError:
