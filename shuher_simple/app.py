@@ -167,6 +167,97 @@ async def read_answer(uid,table,question):
     return answer[:3300]
 
 
+CHAT_SYSTEM=(
+    "Ти Шухер — корисний українськомовний помічник на виробництві. "
+    "Спілкуйся вільно, як звичайний ChatGPT: відповідай на загальні питання, "
+    "аналізуй ідеї, допомагай вибирати інструменти й формулювати характеристики. "
+    "Веди природний діалог, пам'ятай попередні уточнення в межах переданого контексту. "
+    "Коли аналізуєш фото, розрізняй те, що справді видно, і припущення. "
+    "Для ріжучих/абразивних дисків, електроінструментів та небезпечних операцій "
+    "не гарантуй сумісність за фото: перевірка паспортних характеристик виробника, "
+    "посадкового отвору, максимальних обертів і захисного обладнання обов'язкова. "
+    "Не стверджуй, ніби маєш живий доступ до інтернету, актуальних цін чи каталогів. "
+    "Відповідай чесно про невизначеність і за потреби уточнюй питання. "
+    "Ти НЕ маєш можливості записувати або змінювати Google Sheets самостійно. "
+    "Якщо після консультації людина хоче оформити заявку, порадь їй написати "
+    "'оформляй заявку', і сервер покаже чернетку для підтвердження. "
+    "Ніколи не оголошуй запис підтвердженим без фактичного серверного підтвердження."
+)
+
+
+async def chat_answer(uid,chat,text):
+    """Open-ended GPT dialogue with bounded history and queued Telegram photos."""
+    if not await sheet(permission,uid):
+        await send(chat,"Для роботи з Шухером спочатку потрібен доступ від власника. "
+                        "Напиши /start, щоб він побачив твій ID.")
+        return
+    state=await sheet(store.get_dialogue,uid)
+    pictures=state["photos"]
+    question=str(text or "").strip() or "Проаналізуй надіслані фотографії."
+    input_text=(("Підписи до фото: "+state["notes"]+"\n") if state["notes"] else "")+question
+    content=[{"type":"text","text":input_text[:4200]}]
+    for item in pictures:
+        data=await telegram_file_bytes(
+            bot_call,settings.telegram_bot_token,item["file_id"],MAX_PHOTO_BYTES)
+        url="data:image/jpeg;base64,"+base64.b64encode(data).decode("ascii")
+        content.append({"type":"image_url","image_url":{"url":url,"detail":"auto"}})
+    messages=[{"role":"system","content":CHAT_SYSTEM}]
+    for item in state["history"]:
+        messages.append({"role":item["role"],"content":item["content"]})
+    messages.append({"role":"user","content":content if pictures else input_text[:4200]})
+    await bot_call("sendChatAction",{"chat_id":chat,"action":"typing"})
+    answer=str(await ask_model(messages,max_tokens=1000) or "").strip()
+    if not answer:
+        answer="Не вдалося отримати відповідь. Спробуй переформулювати питання."
+    next_state=remember_exchange(state,question,answer,len(pictures))
+    await sheet(store.save_dialogue,uid,next_state)
+    await send(chat,answer[:3700])
+
+
+async def stage_append(uid,chat,person,table,text):
+    """Build a draft from current text and prior discussion; never write yet."""
+    resolved,mode=await sheet(choose,uid,table)
+    if mode!="write":
+        raise ValueError("Для додавання потрібен дозвіл на запис у «"+resolved+"».")
+    state=await sheet(store.get_dialogue,uid)
+    _,values,_=await parse_request(text,resolved,list((await sheet(permission,uid))),
+                                   force="append",history=history_excerpt(state))
+    headers,_=await sheet(store.read_table,resolved)
+    allowed={str(h).casefold():h for h in headers if h not in ("ID","Дата","Автор")}
+    clean={}
+    for key,value in values.items():
+        match=allowed.get(str(key).strip().casefold())
+        if match and isinstance(value,(str,int,float,bool)):
+            clean[match]=str(value).strip()
+    if not clean:
+        tip="Не вистачає даних для заявки. Скажи, що саме, скільки та для чого потрібно."
+        await sheet(store.save_dialogue,uid,remember_exchange(state,text,tip))
+        await send(chat,tip)
+        return
+    if resolved=="Заявки":
+        missing=[f for f in ("Найменування","Кількість","Од. вим.") if not clean.get(f)]
+        if missing:
+            tip="Щоб оформити заявку, уточни: "+", ".join(missing)+"."
+            await sheet(store.save_dialogue,uid,remember_exchange(state,text,tip))
+            await send(chat,tip)
+            return
+        positive_quantity(clean["Кількість"])
+    if resolved=="Склад":
+        missing=[f for f in ("Тип операції","Найменування","Кількість","Од. вим.")
+                 if not clean.get(f)]
+        if missing:
+            tip="Для складського руху уточни: "+", ".join(missing)+"."
+            await sheet(store.save_dialogue,uid,remember_exchange(state,text,tip))
+            await send(chat,tip)
+            return
+        positive_quantity(clean["Кількість"])
+    record_id="SH-"+datetime.now(KYIV).strftime("%Y%m%d%H%M")+"-"+secrets.token_hex(3).upper()
+    await sheet(store.save_pending,uid,resolved,{"record_id":record_id,"values":clean})
+    preview="\n".join(f"{key}: {value}" for key,value in clean.items())
+    await send(chat,"Записати в «"+resolved+"»?\n"+preview+
+                    "\n\nПідтверди: так / ні. Чернетка діє 30 хв.")
+
+
 async def stage_status(uid,chat,table,record_id,field,value,label=""):
     """Save an explicit, user-confirmed, single-cell status change."""
     resolved,mode=await sheet(choose,uid,table)
