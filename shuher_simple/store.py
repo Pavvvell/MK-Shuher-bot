@@ -18,17 +18,20 @@ from googleapiclient.discovery import build
 
 from business import (allowed_status, positive_quantity, stock_balances, stock_key,
                       procurement_from_request, number_text)
+from dialogue import new_dialogue, normalize_dialogue
 
 KYIV=ZoneInfo("Europe/Kyiv")
 USERS="_Shuher_Users"
 GRANTS="_Shuher_Access"
 PENDING="_Shuher_Pending"
 UPDATES="_Shuher_Updates"
+DIALOG="_Shuher_Dialog"
 META={
     USERS:["Telegram ID","Username","Ім'я","Активна таблиця","Перший вхід"],
     GRANTS:["Telegram ID","Таблиця","Доступ","Змінив"],
     PENDING:["Telegram ID","Таблиця","Дані JSON","Дійсне до"],
     UPDATES:["Telegram update ID","Час"],
+    DIALOG:["Telegram ID","Розмова JSON","Оновлено"],
 }
 DEFAULT=["Найменування","Кількість","Одиниця","Проєкт","Статус","Коментар"]
 
@@ -180,6 +183,24 @@ class SheetsStore:
     def clear_pending(self,uid):
         self._upsert(PENDING,lambda r:r and str(r[0])==str(uid),
                      [str(uid),"","",""])
+
+    def get_dialogue(self,uid):
+        for row in self.data(DIALOG)[1:]:
+            if len(row)>=2 and str(row[0])==str(uid):
+                try:
+                    return normalize_dialogue(json.loads(row[1]))
+                except (TypeError,ValueError,json.JSONDecodeError):
+                    return new_dialogue()
+        return new_dialogue()
+
+    def save_dialogue(self,uid,state):
+        normalized=normalize_dialogue(state)
+        payload=json.dumps(normalized,ensure_ascii=False,separators=(",",":"))
+        self._upsert(DIALOG,lambda row:row and str(row[0])==str(uid),
+                     [str(uid),payload,now()])
+
+    def clear_dialogue(self,uid):
+        self.save_dialogue(uid,new_dialogue())
 
     def processed(self,update_id):
         rows=self.client.values().get(spreadsheetId=self.id,
