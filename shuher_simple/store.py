@@ -16,6 +16,9 @@ import google.auth
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
+from business import (allowed_status, positive_quantity, stock_balances, stock_key,
+                      procurement_from_request, number_text)
+
 KYIV=ZoneInfo("Europe/Kyiv")
 USERS="_Shuher_Users"
 GRANTS="_Shuher_Access"
@@ -205,7 +208,7 @@ class SheetsStore:
             if i==0:value=record_id
             elif label in ("дата","дата й час","створено (дата і час)"):value=now()
             elif label in ("автор","ініціатор","вніс"):value=values.get(key) or author
-            elif label=="id заявки":value=values.get(key) or record_id
+            elif label=="id заявки":value=values.get(key,"")
             else:value=values.get(key,"")
             if value is None:value=""
             # Keep stock quantities and prices numeric inside Google Sheets.
@@ -217,6 +220,142 @@ class SheetsStore:
             final.append(value if isinstance(value,(int,float)) else str(value))
         self.append(table,final)
         return True
+
+
+    def _lookup(self,table,record_id):
+        headers,rows=self.read_table(table)
+        matches=[(index,row) for index,row in enumerate(rows,2)
+                 if row and str(row[0]).strip()==str(record_id).strip()]
+        if len(matches)>1:
+            raise ValueError("Знайдено кілька рядків із таким ID. Потрібна перевірка власника.")
+        if not matches:
+            raise ValueError("ID не знайдено у «"+table+"»: "+str(record_id))
+        return headers,matches[0][0],matches[0][1]
+
+    def update_status(self,table,record_id,field,new_value,expected_old):
+        """Update a single status cell, never rewrite unrelated columns."""
+        field,new_value=allowed_status(table,field,new_value)
+        headers,row_num,row=self._lookup(table,record_id)
+        if field not in headers:
+            raise ValueError("У таблиці немає колонки «"+field+"».")
+        index=headers.index(field)
+        current=str(row[index]).strip() if index<len(row) else ""
+        if current==new_value:
+            return False
+        if current!=expected_old:
+            raise ValueError("Статус уже змінився з моменту підтвердження. Перевір запис і повтори /status.")
+        column=""
+        number=index+1
+        while number:
+            number,remainder=divmod(number-1,26)
+            column=chr(65+remainder)+column
+        self.client.values().update(
+            spreadsheetId=self.id,range=quoted(table)+f"!{column}{row_num}",
+            valueInputOption="RAW",body={"values":[[new_value]]}).execute()
+        return True
+
+    def prepare_status(self,table,record_id,field,new_value):
+        field,new_value=allowed_status(table,field,new_value)
+        headers,_,row=self._lookup(table,record_id)
+        if field not in headers:
+            raise ValueError("У таблиці немає колонки «"+field+"».")
+        index=headers.index(field)
+        old=str(row[index]).strip() if index<len(row) else ""
+        return field,new_value,old
+
+    def append_workflow(self,table,values,record_id,author):
+        """Write a row and, for requests, its deterministic linked purchasing row.
+
+        If the first write succeeds but the second fails, retrying the same
+        pending operation repairs the purchase without duplicating the request.
+        """
+        resolved=self.resolve(table)
+        if not resolved:
+            raise ValueError("Таблицю не знайдено.")
+        values=dict(values)
+        if resolved=="Заявки":
+            if not values.get("Найменування") or not values.get("Од. вим."):
+                raise ValueError("У заявці обов'язкові найменування та одиниця виміру.")
+            positive_quantity(values.get("Кількість",""))
+            if not self.resolve("Закупка"):
+                raise ValueError("Спочатку власник має створити вкладку «Закупка».")
+            values["Статус"]="У закупці"
+            created=self.append_record(resolved,values,record_id,author)
+            # One linked procurement per request. The deterministic ID
+            # protects against Telegram retries and interrupted operations.
+            purchase_id="ZK-"+record_id
+            pvalues=procurement_from_request(values,record_id)
+            pcreated=self.append_record("Закупка",pvalues,purchase_id,author)
+            return created,pcreated
+
+        if resolved=="Склад":
+            headers,rows=self.read_table("Склад")
+            if any(row and str(row[0])==record_id for row in rows):
+                return False,False
+            kind=str(values.get("Тип операції","")).strip()
+            if kind not in ("Надходження","Видача"):
+                raise ValueError("Для складу вкажи тип «Надходження» або «Видача».")
+            name=str(values.get("Найменування","")).strip()
+            unit=str(values.get("Од. вим.","")).strip()
+            if not name or not unit:
+                raise ValueError("Для складу потрібні найменування та одиниця виміру.")
+            amount=positive_quantity(values.get("Кількість",""))
+            reference=str(values.get("ID заявки","")).strip()
+            purchase_id=str(values.get("ID закупівлі","")).strip()
+            if reference:
+                self._lookup("Заявки",reference)
+                purchases_headers,purchases=self.read_table("Закупка")
+                ref_col=purchases_headers.index("ID заявки")
+                matching=[r for r in purchases if len(r)>ref_col and str(r[ref_col])==reference]
+                if not matching:
+                    raise ValueError("Для цієї заявки ще немає закупівлі.")
+                valid_ids={str(r[0]) for r in matching}
+                if purchase_id and purchase_id not in valid_ids:
+                    raise ValueError("ID закупівлі не відповідає заявці.")
+                if not purchase_id:
+                    purchase_id=str(matching[0][0])
+            elif purchase_id:
+                self._lookup("Закупка",purchase_id)
+            if "ID закупівлі" in headers and purchase_id:
+                values["ID закупівлі"]=purchase_id
+            if kind=="Видача":
+                balances,_,_=stock_balances(headers,rows)
+                key=stock_key(name,values.get("Характеристики",""),unit)
+                available=balances.get(key,0)
+                if amount>available:
+                    raise ValueError("Недостатньо на складі: "+name+" — "+number_text(available)+
+                                     " "+unit+". Видачу не записано.")
+            created=self.append_record(resolved,values,record_id,author)
+            return created,False
+
+        if resolved=="Закупка" and values.get("ID заявки"):
+            reference=str(values["ID заявки"]).strip()
+            self._lookup("Заявки",reference)
+            headers,rows=self.read_table("Закупка")
+            idx=headers.index("ID заявки")
+            if any(len(r)>idx and str(r[idx]).strip()==reference for r in rows):
+                raise ValueError("Ця заявка вже є в «Закупка». Зміни її статус через /status.")
+        return self.append_record(resolved,values,record_id,author),False
+
+    def balances(self,query=""):
+        headers,rows=self.read_table("Склад")
+        amounts,labels,skipped=stock_balances(headers,rows)
+        wanted=query.strip().casefold()
+        selected=[(label,amounts[k]) for k,label in labels.items()
+                  if not wanted or wanted in " ".join(label).casefold()]
+        selected.sort(key=lambda item:item[0][0].casefold())
+        lines=["Залишки складу (надходження мінус видача):"]
+        for (name,spec,unit),amount in selected[:45]:
+            suffix=(" · "+spec) if spec else ""
+            warning=" ⚠️" if amount<0 else ""
+            lines.append(f"• {name}{suffix}: {number_text(amount)} {unit}{warning}")
+        if not selected:
+            lines.append("Позицій не знайдено.")
+        if len(selected)>45:
+            lines.append("Показано 45 позицій. Уточни пошук: /balance назва")
+        if skipped:
+            lines.append(f"⚠️ Пропущено некоректних рухів: {skipped}. Перевір вкладку «Склад».")
+        return "\n".join(lines)
 
     def csv_data(self,table):
         headers,rows=self.read_table(table)
