@@ -618,43 +618,24 @@ async def handle_message(update):
             await send(chat,"Є незавершений запис. Відповідай «так» або «ні», "
                             "або /cancel для нового запиту.")
             return
-        force=None
         if text.lower().startswith("/ask "):
             table,_=await sheet(choose,uid,"")
             await send(chat,await read_answer(uid,table,text[5:].strip()))
             return
         if text.lower().startswith("/add "):
-            force="append";text=text[5:].strip()
-        if force is None and await handle_natural(uid,chat,text):
+            table,_=await sheet(choose,uid,"")
+            await stage_append(uid,chat,person,table,text[5:].strip())
             return
-        table,mode=await sheet(choose,uid,"")
-        # Ordinary language is interpreted only within the currently selected table.
-        intent,values,question=await parse_request(text,table,list((await sheet(permission,uid))),force)
-        if intent=="read":
-            await send(chat,await read_answer(uid,table,question))
+        state=await sheet(store.get_dialogue,uid)
+        # Photos are always discussed first, never silently submitted
+        # as a purchase request just because a caption says "купити".
+        if state["photos"]:
+            await chat_answer(uid,chat,text)
             return
-        if intent=="append":
-            if mode!="write":
-                await send(chat,"Для цієї таблиці маєш лише право читання.")
-                return
-            headers,_=await sheet(store.read_table,table)
-            allowed={str(h).casefold():h for h in headers if h not in ("ID","Дата","Автор")}
-            clean={}
-            for k,v in values.items():
-                match=allowed.get(str(k).casefold())
-                if match and isinstance(v,(str,int,float,bool)):
-                    clean[match]=str(v)
-            if not clean:
-                await send(chat,"Не вдалося визначити, що записати. Вкажи назву, кількість та інші дані.")
-                return
-            record_id="SH-"+datetime.now(KYIV).strftime("%Y%m%d%H%M")+"-"+secrets.token_hex(3).upper()
-            await sheet(store.save_pending,uid,table,{"record_id":record_id,"values":clean})
-            preview="\n".join(f"{k}: {v}" for k,v in clean.items())
-            await send(chat,"Записати в «"+table+"»?\n"+preview+
-                            "\n\nВідповідь: так / ні. Чернетка діє 30 хв.")
+        if await handle_natural(uid,chat,person,text):
             return
-        await send(chat,"Я можу знайти дані або додати рядок у вибрану таблицю. "
-                        "Спробуй /ask запит або /add опис. Нові таблиці створює лише власник.")
+        # Default: no slash commands, no table selection, ordinary GPT chat.
+        await chat_answer(uid,chat,text)
     except ValueError as exc:
         await send(chat,str(exc))
     except Exception:
