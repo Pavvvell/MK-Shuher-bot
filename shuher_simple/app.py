@@ -566,6 +566,13 @@ async def handle_message(update):
                 await send(chat,"Невідома команда. /help")
                 return
         pending=await sheet(store.get_pending,uid)
+        # Voice recognition can mishear a short "так"; require an actual
+        # typed confirmation before any Google Sheets mutation.
+        if (from_voice and pending and
+                text.casefold() in ("так","да","yes","підтверджую")):
+            await send(chat,"Почув підтвердження, але для запису в таблицю "
+                            "напиши «так» текстом. Це захист від помилок розпізнавання.")
+            return
         if pending and pending["payload"].get("kind")=="status_pick":
             payload=pending["payload"]
             if text.casefold() in ("ні","нет","no","скасувати"):
