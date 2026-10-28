@@ -88,3 +88,62 @@ def status_selection_text(candidates):
         lines.append(f"{index}. {item['label']} (ID {item['id']})")
     lines.append("Відповідай номером, наприклад «1», або «ні» для скасування.")
     return "\n".join(lines)
+
+import json
+from business import STATUSES, allowed_status
+
+
+async def interpret_natural(text, permissions, is_owner, ask_model):
+    """AI interprets intent; caller must verify target against actual rows."""
+    writable={table:fields for table,fields in STATUSES.items()
+              if permissions.get(table)=="write"}
+    can_balance="Склад" in permissions
+    if not (writable or can_balance or is_owner):
+        return {"intent":"other"}
+    system=(
+        "Ти класифікуєш природні повідомлення українською у складському боті. "
+        "Поверни ЛИШЕ JSON: intent (status|balance|today|other), table, field, value, target. "
+        "status — ТІЛЬКИ якщо користувач повідомляє, що статус ВЖЕ ІСНУЮЧОЇ "
+        "заявки, закупівлі чи доручення змінився. "
+        "Приклади: 'болти М8×30 вже замовили' -> "
+        "status, Закупка, Статус замовлення, Замовлено, болти М8×30; "
+        "'гайки М12 оплатили' -> status, Закупка, Статус оплати, Оплачено, гайки М12; "
+        "'завдання з вентиляції виконали' -> status, Доручення, Статус, Виконано, вентиляції. "
+        "target містить тільки назву, розмір, проєкт чи ID позиції БЕЗ дієслів зміни статусу. "
+        "Не губи числа або технічні розміри. "
+        "Запит про залишки на складі -> balance, target=назва товару або пусто. "
+        "'Що сьогодні пішло в закупку' -> today (тільки для власника). "
+        "Нові заявки ('треба купити'), додавання складських рухів, питання, "
+        "пошук або невизначені формулювання -> other. "
+        "Не вигадуй ID, не створюй записів і не змінюй дані. "
+        "Дозволені тільки статуси: "+json.dumps(writable,ensure_ascii=False)+". "
+        "Можна запитувати складські залишки: "+str(can_balance)+". "
+        "Можна бачити денний звіт: "+str(is_owner)+". "
+        "Якщо є сумнів — other."
+    )
+    try:
+        raw=await ask_model(
+            [{"role":"system","content":system},{"role":"user","content":text}],
+            max_tokens=300,json_mode=True)
+        data=json.loads(raw)
+    except (TypeError,ValueError):
+        return {"intent":"other"}
+    if not isinstance(data,dict):
+        return {"intent":"other"}
+    intent=data.get("intent")
+    if intent=="today" and is_owner:
+        return {"intent":"today"}
+    if intent=="balance" and can_balance:
+        return {"intent":"balance","target":str(data.get("target") or "").strip()[:160]}
+    if intent=="status":
+        table=next((x for x in writable
+                    if x.casefold()==str(data.get("table") or "").strip().casefold()),None)
+        if not table:
+            return {"intent":"other"}
+        try:
+            field,value=allowed_status(table,data.get("field"),data.get("value"))
+        except ValueError:
+            return {"intent":"other"}
+        return {"intent":"status","table":table,"field":field,"value":value,
+                "target":str(data.get("target") or "").strip()[:180]}
+    return {"intent":"other"}
