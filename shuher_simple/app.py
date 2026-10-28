@@ -513,13 +513,53 @@ async def handle_message(update):
         return
     chat=chatobj["id"]
     uid=int(person["id"])
-    text=(msg.get("text") or "").strip()
-    if not text:return
+    text=(msg.get("text") or msg.get("caption") or "").strip()
     fresh=await sheet(store.register,person)
     if fresh and uid not in owners:
         await notify_owners(uid,person)
     try:
-        if text.startswith("/"):
+        # Each Telegram album photo arrives as a separate update with a
+        # common media_group_id. Queue the IDs; analyse after a text question
+        # (or /analyze), never respond independently to every album image.
+        image_document=msg.get("document") or {}
+        doc_mime=str(image_document.get("mime_type") or "")
+        doc_is_image=doc_mime in ("image/jpeg","image/png","image/webp")
+        if msg.get("photo") or doc_is_image:
+            if not await sheet(permission,uid):
+                await send(chat,"Щоб обговорювати фото, власник має надати тобі доступ. /start")
+                return
+            if await sheet(store.get_pending,uid):
+                await send(chat,"Спочатку підтвердь або скасуй незавершений запис: так / ні.")
+                return
+            image=(msg["photo"][-1] if msg.get("photo") else image_document)
+            if int(image.get("file_size") or 0)>MAX_PHOTO_BYTES:
+                await send(chat,"Фото завелике. Надішли звичайне стиснене фото в Telegram.")
+                return
+            state=await sheet(store.get_dialogue,uid)
+            state,first=queue_photo(state,image["file_id"],msg.get("media_group_id"),
+                                    msg.get("caption") or "",
+                                    doc_mime if doc_is_image else "image/jpeg")
+            await sheet(store.save_dialogue,uid,state)
+            if text and not msg.get("media_group_id"):
+                await chat_answer(uid,chat,text)
+            elif first:
+                await send(chat,"Фото отримав. Можеш надіслати ще (до 6 штук). "
+                                "Потім напиши, що треба з'ясувати, або /analyze.")
+            return
+        if msg.get("document") and not doc_is_image:
+            await send(chat,"Поки розбираю фото JPEG/PNG/WebP. PDF та інші документи ще не підтримую.")
+            return
+        from_voice=bool(msg.get("voice"))
+        if from_voice:
+            if not await sheet(permission,uid):
+                await send(chat,"Для голосових спочатку потрібен доступ від власника. /start")
+                return
+            text=await transcribe_telegram_voice(
+                msg,bot_call,settings.telegram_bot_token,openai)
+            await send(chat,"🎙️ Почув: "+text)
+        if not text:
+            return
+        if text.startswith("/") and not from_voice:
             command_result=await handle_command(uid,chat,person,text)
             if command_result is not False:return
             if text.split()[0].split("@",1)[0].casefold() not in ("/ask","/add"):
