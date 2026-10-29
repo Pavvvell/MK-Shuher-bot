@@ -42,7 +42,7 @@ def _term_match(term, content):
 
 def search_history(source, access, is_owner, query, max_hits=26):
     """Return only source rows in tabs the caller is permitted to read."""
-    authorized=[name for name in HISTORY_TABS if is_owner or name in access]
+    authorized=[name for name in HISTORY_TABS if is_owner or access.get(name) in ("read","write")]
     if not authorized:
         return {"query":str(query)[:180],"results":[],"error":"Немає доступу до історичних розділів."}
     terms=_terms(query)
