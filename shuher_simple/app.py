@@ -32,6 +32,7 @@ from projects import (canonical_project, approved_projects, select_project_messa
 from media import (MAX_PHOTO_BYTES, telegram_file_bytes, transcribe_telegram_voice)
 from natural import interpret_natural, status_candidates, status_selection_text
 from outreach import is_send_request, delivery_plan, choose_recipients, MAX_RECIPIENTS
+from task_notifications import plain_telegram_text, task_fields, authorized_recipient, task_marker, task_notice
 from llm import generate
 
 logging.basicConfig(level=logging.INFO)
@@ -80,7 +81,7 @@ async def bot_call(method,payload=None,files=None):
         return answer
 
 async def send(chat,text):
-    text=str(text or "Немає даних.")
+    text=plain_telegram_text(str(text or "Немає даних."))
     for start in range(0,len(text),3900):
         await bot_call("sendMessage",{"chat_id":chat,"text":text[start:start+3900]})
 
@@ -347,6 +348,37 @@ async def stage_append(uid,chat,person,table,text):
     preview="\n".join(f"{key}: {value}" for key,value in clean.items())
     await send(chat,"Записати в «"+resolved+"»?\n"+preview+
                     "\n\nПідтверди: так / ні. Чернетка діє 30 хв.")
+
+
+async def sync_task_notifications():
+    """Send new/changed task notices to authorized registered assignees."""
+    headers, rows = await sheet(store.read_table, "Доручення")
+    users = await sheet(store.users)
+    grants = await sheet(store.data, "_Shuher_Access")
+    processed = await sheet(store.task_notification_markers)
+    count = 0
+    for row in rows:
+        fields = task_fields(headers, row)
+        record_id = fields.get("ID", "")
+        if not record_id or not fields.get("Завдання"):
+            continue
+        target = authorized_recipient(fields.get("Виконавець"), users, grants)
+        if target is None:
+            continue
+        recipient_id, _ = target
+        marker = task_marker(record_id, fields, recipient_id)
+        if marker in processed:
+            continue
+        previous = any(m.startswith("tasknotify:" + record_id + ":") for m in processed)
+        try:
+            await send(recipient_id, task_notice(fields, update=previous))
+        except Exception:
+            log.exception("Task notification failed for %s", record_id)
+            continue
+        await sheet(store.mark_processed, marker)
+        processed.add(marker)
+        count += 1
+    return count
 
 
 async def notify_procurement(created_by,record_id,values):
@@ -1621,6 +1653,8 @@ async def handle_message(update):
                 changed=await sheet(store.update_status,table,payload["record_id"],
                                     payload["field"],payload["value"],payload["expected_old"])
                 await sheet(store.clear_pending,uid)
+                if changed and table=="Доручення":
+                    await sync_task_notifications()
                 await send(chat,("Статус оновлено. ID "+payload["record_id"]+
                                  ": "+payload["field"]+" → "+payload["value"])
                            if changed else "Цей статус уже встановлено.")
@@ -1640,6 +1674,8 @@ async def handle_message(update):
                            "» і передано власнику на перевірку. "
                            "Бухгалтерії не відправлено.")
                 return
+            if table=="Доручення" and added:
+                await sync_task_notifications()
             if table=="Заявки":
                 await send(chat,"Заявка "+payload["record_id"]+
                            " записана й автоматично пов'язана із закупівлею ZK-"+
@@ -1738,6 +1774,16 @@ app=FastAPI(lifespan=lifespan)
 @app.get("/health")
 async def health():
     return {"status":"ok","backend":"google-sheets","model":settings.openai_model}
+
+@app.post("/tasks/sync")
+async def task_sync(x_shuher_sync_secret: str | None = Header(default=None)):
+    """Trusted scheduled sync for edits made directly in Google Sheets."""
+    if not x_shuher_sync_secret or not secrets.compare_digest(
+            x_shuher_sync_secret, settings.telegram_webhook_secret):
+        raise HTTPException(403, "Forbidden")
+    async with inflight:
+        count = await sync_task_notifications()
+    return {"ok": True, "notifications": count}
 
 @app.post("/telegram/webhook")
 async def webhook(request:Request,
