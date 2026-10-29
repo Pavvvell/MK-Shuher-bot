@@ -1,60 +1,68 @@
-"""Offline tests for owner permission menus and Sheets access edits."""
+"""Offline safety checks for the owner's single-screen permission editor."""
 import unittest
 from unittest.mock import Mock
 
 from access_ui import (
-    PRESETS, MANAGED_TABS, READ_ONLY_TABS, list_view, user_view,
-    managed_changes, manual_view, preview_view, modes_view,
+    MODE_CODE, MODE_LABEL, READ_ONLY_TABS, can_read, can_write,
+    list_view, user_view, title_for, token_for, preview_view,
 )
 from store import SheetsStore, GRANTS
 
 
 class AccessUITests(unittest.TestCase):
-    def test_new_user_has_owner_action_and_no_text_commands(self):
-        text,markup=user_view(["1769804789","testuser","Юрій","",""],{})
-        self.assertIn("@testuser",text)
-        data=[b["callback_data"] for row in markup["inline_keyboard"] for b in row]
-        self.assertIn("su:p:1769804789:buy",data)
-        self.assertIn("su:m:1769804789:0",data)
-        self.assertIn("su:z:1769804789",data)
-        self.assertTrue(all(len(d.encode("utf8"))<=64 for d in data))
+    def test_single_list_with_three_explicit_permission_buttons(self):
+        tabs=["Заявки","Закупка","Склад","Доручення","Рахунки",
+              "Накладні","Проєкти","Уточнення відомостей"]
+        user=["1769804789","Octavia_Yur","Юрій","",""]
+        text,markup=user_view(user,{"Заявки":"read","Закупка":"write",
+                                    "Рахунки":"write_only"},tabs)
+        self.assertIn("@Octavia_Yur",text)
+        self.assertNotIn("🛒 Закупівельник",str(markup))
+        rows=markup["inline_keyboard"][:-1]
+        self.assertEqual(len(rows),len(tabs))
+        self.assertTrue(all(len(row)==4 for row in rows))
+        self.assertEqual(rows[0][1]["text"],"✓Читання")
+        self.assertEqual(rows[1][3]["text"],"✓Ч+З")
+        self.assertEqual(rows[4][2]["text"],"✓Запис")
+        self.assertTrue(all(len(b["callback_data"].encode("utf-8"))<=64
+                            for row in markup["inline_keyboard"] for b in row))
+        self.assertIn("🔒",str(rows[6]))
+        self.assertNotIn("Перегляд і запис",str(rows[6]))
+        self.assertIn("Уточнення",str(rows[-1][0]))
 
-    def test_preset_privileges_are_least_privileged(self):
-        self.assertEqual(PRESETS["buy"][1]["Рахунки"],"write")
-        self.assertEqual(PRESETS["stock"][1]["Накладні"],"write")
-        self.assertNotIn("Рахунки",PRESETS["stock"][1])
-        self.assertEqual(PRESETS["pm"][1]["Закупка"],"read")
-        self.assertTrue(all("Правила Шухера" not in v[1] for v in PRESETS.values()))
+    def test_row_tokens_are_stable_after_reordering(self):
+        titles=["Склад","Заявки","Уточнення відомостей"]
+        token=token_for("Уточнення відомостей")
+        self.assertEqual(title_for(list(reversed(titles)),token),"Уточнення відомостей")
+        with self.assertRaises(ValueError):
+            title_for(titles,"this_is_not_a_tab")
 
-    def test_changes_preview_only_managed_modules(self):
-        name,changes=managed_changes({"Заявки":"write","Рахунки":"read",
-                                      "Кадри":"write"},
-                     ["Заявки","Рахунки","Кадри","Склад"],"stock")
-        self.assertEqual(name,"Комірник")
-        self.assertNotIn("Кадри",[c[0] for c in changes])
-        self.assertIn(("Рахунки","read","none"),changes)
-        text,markup=preview_view(176,"test",changes,"su:c:176:stock")
-        self.assertIn("Підтвердити",text)
+    def test_read_write_are_separate(self):
+        cases={
+          "none":(False,False),
+          "read":(True,False),
+          "write_only":(False,True),
+          "write":(True,True),
+        }
+        for mode,(reading,writing) in cases.items():
+            self.assertEqual(can_read(mode),reading)
+            self.assertEqual(can_write(mode),writing)
+        self.assertEqual(MODE_LABEL["write_only"],"Запис")
+
+    def test_preview_requires_explicit_confirmation(self):
+        text,markup=preview_view(
+            "1769804789","Юрій",[("Склад","none","write_only")],
+            "su:r:1769804789:abc:w:n",
+        )
+        self.assertIn("Підтвердити зміну",text)
         self.assertEqual(markup["inline_keyboard"][0][0]["callback_data"],
-                         "su:c:176:stock")
+                         "su:r:1769804789:abc:w:n")
 
-    def test_manual_read_only_section_no_write_button(self):
-        text,markup=modes_view(177,"Проєкти",0,0,"read")
-        self.assertNotIn(":write:",str(markup))
-        text2,markup2=modes_view(177,"Склад",0,0,"read")
-        self.assertIn(":write:",str(markup2))
-        self.assertIn("Проєкти",READ_ONLY_TABS)
-
-    def test_pagination(self):
-        users=[[str(100000+i),"","Користувач"+str(i),"",""] for i in range(19)]
+    def test_user_pagination(self):
+        users=[[str(100000+i),"","Працівник"+str(i),"",""] for i in range(19)]
         text,markup=list_view(users,1)
         self.assertIn("Сторінка 2/3",text)
         self.assertEqual(len(markup["inline_keyboard"]),8)
-        self.assertTrue(any(
-            b["callback_data"]=="su:l:2" for row in markup["inline_keyboard"]
-            for b in row))
-        text2,markup2=manual_view(112,["Таблиця"+str(i) for i in range(20)],{},2)
-        self.assertIn("3/3",text2)
 
 
 class StoreAccessTests(unittest.TestCase):
@@ -62,8 +70,8 @@ class StoreAccessTests(unittest.TestCase):
         store=SheetsStore.__new__(SheetsStore)
         store.id="SPREADSHEET"
         store.user=lambda uid:["1769804789","user","Юрій","",""] if uid==1769804789 else None
-        store.tables=lambda:["Заявки","Закупка","Склад","Рахунки","Накладні",
-                             "Доручення","Проєкти","Кадри"]
+        store.tables=lambda:["Заявки","Закупка","Склад","Рахунки",
+                             "Накладні","Доручення","Проєкти","Кадри"]
         store.resolve=lambda name:name if name in store.tables() else None
         values=Mock()
         values.update.return_value.execute.return_value={}
@@ -72,27 +80,25 @@ class StoreAccessTests(unittest.TestCase):
         rows=[
             ["Telegram ID","Таблиця","Доступ","Змінив"],
             ["1769804789","Заявки","write","123"],
-            ["1769804789","Кадри","write","123"],
+            ["1769804789","Кадри","write_only","123"],
             ["456","Доручення","read","123"],
             ["1769804789","Рахунки","read","123"],
         ]
         store.data=lambda name:rows if name==GRANTS else []
+        store._upsert=Mock()
         return store,values
 
-    def test_profile_update_preserves_future_hr_and_other_users(self):
+    def test_store_accepts_distinct_read_write_combined(self):
         store,values=self.fixture()
-        changed=store.apply_access_profile(1769804789,"buy",42)
-        self.assertGreater(changed,0)
-        kwargs=values.update.call_args.kwargs
-        self.assertEqual(kwargs["range"],"'_Shuher_Access'!A1:D7")
-        rows=kwargs["body"]["values"]
-        self.assertIn(["1769804789","Кадри","write","123"],rows)
-        self.assertIn(["456","Доручення","read","123"],rows)
-        self.assertIn(["1769804789","Заявки","read","42"],rows)
-        self.assertIn(["1769804789","Рахунки","write","42"],rows)
-        self.assertIn(["1769804789","Закупка","write","42"],rows)
+        for mode in ("read","write_only","write","none"):
+            store.grant(1769804789,"Заявки",mode,42)
+        self.assertEqual(store._upsert.call_count,4)
+        self.assertEqual(
+            [args.args[3][2] for args in store._upsert.call_args_list],
+            ["read","write_only","write","none"],
+        )
 
-    def test_revoke_all_requires_registered_user(self):
+    def test_revoke_all_includes_write_only_and_preserves_others(self):
         store,values=self.fixture()
         with self.assertRaisesRegex(ValueError,"/start"):
             store.revoke_all_access(999,42)
@@ -102,12 +108,13 @@ class StoreAccessTests(unittest.TestCase):
         self.assertIn(["1769804789","Кадри","none","42"],rows)
         self.assertIn(["456","Доручення","read","123"],rows)
 
-    def test_protected_tables_cannot_get_write(self):
+    def test_protected_tables_cannot_get_any_write(self):
         store,values=self.fixture()
         store.tables=lambda:["Проєкти","Правила Шухера"]
-        with self.assertRaisesRegex(ValueError,"тільки для читання"):
-            store.grant(1769804789,"Правила Шухера","write",42)
-        values.update.assert_not_called()
+        for mode in ("write","write_only"):
+            with self.assertRaisesRegex(ValueError,"тільки для читання"):
+                store.grant(1769804789,"Правила Шухера",mode,42)
+        store._upsert.assert_not_called()
 
 
 if __name__=="__main__":
