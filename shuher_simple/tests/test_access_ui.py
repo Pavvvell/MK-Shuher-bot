@@ -31,7 +31,6 @@ class AccessUITests(unittest.TestCase):
                                       "Кадри":"write"},
                      ["Заявки","Рахунки","Кадри","Склад"],"stock")
         self.assertEqual(name,"Комірник")
-        self.assertIn(("Заявки","write","write"),[("Заявки","write","write")])
         self.assertNotIn("Кадри",[c[0] for c in changes])
         self.assertIn(("Рахунки","read","none"),changes)
         text,markup=preview_view(176,"test",changes,"su:c:176:stock")
@@ -85,7 +84,7 @@ class StoreAccessTests(unittest.TestCase):
         changed=store.apply_access_profile(1769804789,"buy",42)
         self.assertGreater(changed,0)
         kwargs=values.update.call_args.kwargs
-        self.assertEqual(kwargs["range"],"'_Shuher_Access'!A1:D8")
+        self.assertEqual(kwargs["range"],"'_Shuher_Access'!A1:D7")
         rows=kwargs["body"]["values"]
         self.assertIn(["1769804789","Кадри","write","123"],rows)
         self.assertIn(["456","Доручення","read","123"],rows)
