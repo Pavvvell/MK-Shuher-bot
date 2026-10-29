@@ -19,6 +19,9 @@ from business import today_procurement, positive_quantity
 from company import build_company_context
 from knowledge import search_history, render_owner_rules
 from receipt_pdf import photos_to_pdf
+from purchase_bundle import (validate_package, missing_invoice_project,
+                             apply_invoice_project, grouped_preview,
+                             validate_persistence)
 from dialogue import queue_photo, queue_document, clear_attachments, remember_exchange, history_excerpt
 from access_ui import (button as access_button, keyboard as access_keyboard,
                        list_view, user_view, CODE_MODE, MODE_LABEL,
@@ -415,6 +418,217 @@ def text_mentions_invoice(text):
          "виставили рахунок","це рахунок","надсилаю рахунок",
          "скидаю рахунок","оплата карткою","оплата з карт",
          "скрін оплати","чек оплати","рахунок-фактура"))
+
+
+def wants_purchase_bundle(text):
+    words=str(text or "").casefold()
+    return any(term in words for term in (
+        "рахун","оплат","картк","чек","покупк","видатков",
+        "документ","розбери","розділи","розподіли",
+        "перше фото","перша фот","друге фото","друга фот",
+        "третє фото","третя фот","фото 1","фото 2",
+        "все,","все.","все!","це все","це всі",
+    ))
+
+
+async def stage_purchase_bundle(uid,chat,person,text,state=None):
+    """Classify each purchaser photo, then ask *purchaser* what is missing.
+
+    Never send an unreviewed bundle of unrelated images to the owner.
+    A card charge and an independent invoice must not be compared or joined.
+    """
+    access=await sheet(permission,uid)
+    if not can_write(access.get("Рахунки")):
+        raise ValueError("Для подання документів потрібен дозвіл на запис у «Рахунки».")
+    state=state or await sheet(store.get_dialogue,uid)
+    photos=state.get("photos",[])
+    if not photos:
+        await send(chat,"Надішли фото чека, товару або рахунку. "
+                        "Після останнього напиши «розбери фото».")
+        return
+    content=[{"type":"text","text":(
+        "Це незалежні фотографії, які працівник подав для розбору. "
+        "Ретельно визнач тип КОЖНОГО фото ЗА НОМЕРОМ. "
+        "Не об'єднуй не пов'язані документи. "
+        "Якщо фото №1 підтверджує оплату карткою, №2 показує "
+        "оплачений ним товар, а №3 є окремим рахунком — "
+        "це ДВІ ФІНАНСОВІ ОПЕРАЦІЇ, а не один рахунок на три фото. "
+        "Валюта, суми та постачальники різних документів НЕ "
+        "повинні звірятися як помилка, якщо власник чи працівник "
+        "не заявили, що це одна операція. "
+        "Не вигадуй приховані реквізити, суми, кількості, проєкти "
+        "та зв'язки між документами. Проєкти призначає виключно "
+        "сервер після явної відповіді працівника. "
+        "Поверни ТІЛЬКИ JSON-об'єкт із двома полями: "
+        "images = [{index:1,type:'card_payment|goods_photo|invoice|other'},...], "
+        "groups = [{type:'card_purchase|invoice',images:[1,2],"
+        "supplier:'',amount:'',currency:'грн',description:'',"
+        "invoice_no:'',quantity:'',note:''},...]. "
+        "Число groups означає число ФІНАНСОВИХ операцій, не фото. "
+        "Кожне фото віднеси лише до ОДНІЄЇ операції. "
+        "card_purchase обов'язково має фото оплати, "
+        "invoice — фото окремого рахунку. "
+        "goods_photo може бути доповненням до card_purchase, "
+        "але ніколи не invoice. "
+        "Якщо не впевнений у типі, познач other. "
+        "Текст працівника (джерело для групування): "
+        +str(text or "")[:1800]+
+        "\nПідписи до фото (джерело): "+str(state.get("notes") or "")[:1200]
+    )}]
+    for i,photo in enumerate(photos,1):
+        raw=await telegram_file_bytes(
+            bot_call,settings.telegram_bot_token,photo["file_id"],MAX_PHOTO_BYTES)
+        content.append({"type":"text","text":"ОКРЕМЕ ФОТО №"+str(i)})
+        content.append({"type":"image_url","image_url":{
+            "url":"data:"+photo.get("mime","image/jpeg")+";base64,"+
+                  base64.b64encode(raw).decode("ascii"),
+            "detail":"auto",
+        }})
+    await bot_call("sendChatAction",{"chat_id":chat,"action":"typing"})
+    raw_answer=await ask_model([
+        {"role":"system","content":
+         "Ти обережний обліковець документів. "
+         "Фотографії НЕ є однією транзакцією за замовчуванням. "
+         "Відповідай виключно JSON, не стверджуй факт оплати рахунку "
+         "на підставі іншого фото банківської картки."},
+        {"role":"user","content":content},
+    ],max_tokens=1450,json_mode=True)
+    try:
+        package=validate_package(json.loads(raw_answer),len(photos))
+    except (ValueError,TypeError,KeyError) as exc:
+        await send(chat,"Не можу надійно розділити документи: "+str(exc)+
+                        " Уточни, які номери фото належать одній покупці "
+                        "й які є окремими рахунками. Нічого не записано.")
+        return
+    invoices=[g for g in package["groups"] if g["type"]=="invoice"]
+    if len(invoices)==1:
+        project=await sheet(explicit_project_in_message,store,text)
+        if project:
+            invoices[0]["project"]=project
+    rid="PB-"+datetime.now(KYIV).strftime("%Y%m%d%H%M")+"-"+secrets.token_hex(3).upper()
+    await sheet(store.save_pending,uid,"Рахунки",{
+        "kind":"purchase_bundle","bundle_id":rid,
+        "package":package,"photos":photos,
+    })
+    preview=grouped_preview(package)
+    if missing_invoice_project(package):
+        await send(chat,preview+"\n\nДля рахунку (НЕ для оплати карткою) "+
+                   "уточни проєкт.\n"+
+                   await sheet(select_project_message,store,"рахунку"))
+    else:
+        await send(chat,preview+"\n\nПідтверди «так», щоб записати окремі "
+                   "операції й надіслати власнику структурований підсумок. "
+                   "Можеш також пояснити, якщо я неправильно розділив фото.")
+
+
+async def commit_purchase_bundle(uid,chat,person,payload):
+    """Confirm the whole package once, preserving source-photo boundaries.
+
+    Stable per-group IDs let interrupted retries finish without duplicates.
+    """
+    package=payload["package"]
+    validate_persistence(package)
+    access=await sheet(permission,uid)
+    if not can_write(access.get("Рахунки")):
+        raise ValueError("Право подавати рахунки відкликано.")
+    if (any(g["type"]=="card_purchase" for g in package["groups"])
+            and not can_write(access.get("Покупки карткою"))):
+        raise ValueError("Для карткових покупок немає права запису в "
+                         "«Покупки карткою». Попроси власника відкрити його.")
+    photos=payload["photos"]
+    outcomes=[]
+    author=user_label(person)
+    for index,entry in enumerate(package["groups"],1):
+        ids=[photos[i-1]["file_id"] for i in entry["images"]]
+        record_id=payload["bundle_id"]+"-"+str(index)
+        if entry["type"]=="invoice":
+            values={
+                "Проєкт":entry["project"],
+                "Постачальник":entry["supplier"],
+                "Номер рахунку":entry["invoice_no"],
+                "Сума":entry["amount"],
+                "Валюта":entry["currency"],
+                "Коментар":entry["description"]+
+                            ("; "+entry["note"] if entry["note"] else ""),
+                "Тип документа":"Рахунок",
+                "Документ / посилання":"Окремі фото: "+
+                            ", ".join(str(i) for i in entry["images"]),
+                "Telegram файли":", ".join(ids),
+                "Передав Юрій":author,
+                "Джерело":"Telegram · пакет "+payload["bundle_id"],
+            }
+            created,_=await sheet(store.append_workflow,"Рахунки",
+                                  values,record_id,author)
+        else:
+            pay=[photos[i-1]["file_id"] for i in entry["images"]
+                 if package["images"][i]=="card_payment"]
+            goods=[photos[i-1]["file_id"] for i in entry["images"]
+                   if package["images"][i]=="goods_photo"]
+            values={
+                "Проєкт":entry.get("project") or "",
+                "Найменування / опис":entry["description"],
+                "Кількість / характеристики":entry["quantity"],
+                "Сума":entry["amount"],"Валюта":entry["currency"],
+                "Магазин / постачальник":entry["supplier"],
+                "Фото оплати":", ".join(pay),"Фото товару":", ".join(goods),
+                "Telegram файли":", ".join(ids),
+                "Коментар":entry["note"],
+                "Група документів":payload["bundle_id"],
+            }
+            created,_=await sheet(store.append_workflow,"Покупки карткою",
+                                  values,record_id,author)
+        outcomes.append((entry,record_id,created))
+    await sheet(store.clear_pending,uid)
+    state=await sheet(store.get_dialogue,uid)
+    await sheet(store.save_dialogue,uid,clear_attachments(state))
+    report=["Шухер: Юрій подав документи після звірки. "
+            "Різні покупки НЕ об'єднані.\n"
+            "Пакет: "+payload["bundle_id"]]
+    for entry,record_id,created in outcomes:
+        if entry["type"]=="invoice":
+            report.append(
+                "\n🧾 ОКРЕМИЙ РАХУНОК — на перевірку власнику"+
+                "\nПроєкт: "+entry["project"]+
+                "\nПостачальник: "+(entry["supplier"] or "уточнити")+
+                "\nРахунок № "+(entry["invoice_no"] or "уточнити")+
+                "\nСума: "+entry["amount"]+" "+entry["currency"]+
+                "\nФото: "+", ".join("#"+str(i) for i in entry["images"])+
+                "\nID: "+record_id+
+                "\nНе передано бухгалтерії.")
+        else:
+            report.append(
+                "\n💳 УЖЕ ОПЛАЧЕНО КАРТКОЮ — окрема покупка"+
+                "\nМагазин: "+(entry["supplier"] or "уточнити")+
+                "\nСума: "+entry["amount"]+" "+entry["currency"]+
+                "\nТовар: "+(entry["description"] or "уточнити")+
+                "\nФото: "+", ".join("#"+str(i) for i in entry["images"])+
+                "\nID: "+record_id+
+                "\nНе є оплатою окремого рахунку.")
+    text="\n".join(report)
+    success=0
+    for owner in owners:
+        try:
+            await send(owner,text)
+            for entry,_,_ in outcomes:
+                for image_no in entry["images"]:
+                    await bot_call("sendPhoto",{
+                        "chat_id":owner,
+                        "photo":photos[image_no-1]["file_id"],
+                        "caption":(
+                            ("Рахунок" if entry["type"]=="invoice"
+                             else "Карткова покупка")+
+                            " · фото №"+str(image_no)+" · "+payload["bundle_id"]
+                        ),
+                    })
+            success+=1
+        except Exception:
+            log.exception("Could not forward separated purchasing package to owner")
+    summary="Записав "+str(len(outcomes))+" окремих операцій. "
+    summary+=("Власнику надіслав структурований підсумок і відповідні фото."
+              if success else
+              "Власника сповістити не вдалося, але записи збережено. "
+              "Повідом про це власнику.")
+    await send(chat,summary)
 
 
 async def finish_invoice_draft(uid,chat,values,attachments):
