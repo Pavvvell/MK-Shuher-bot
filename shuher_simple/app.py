@@ -20,7 +20,8 @@ from company import build_company_context
 from knowledge import search_history, render_owner_rules
 from dialogue import queue_photo, queue_document, clear_attachments, remember_exchange, history_excerpt
 from projects import (canonical_project, approved_projects, select_project_message,
-                      select_project_answer, requested_new_project, approve_new_project)
+                      select_project_answer, requested_new_project, approve_new_project,
+                      explicit_project_in_message)
 from media import (MAX_PHOTO_BYTES, telegram_file_bytes, transcribe_telegram_voice)
 from natural import interpret_natural, status_candidates, status_selection_text
 
@@ -447,8 +448,7 @@ async def stage_invoice(uid,chat,person,text):
             values[field]=str(v).strip()[:500]
     # Do not accept a project guessed by a model from a document:
     # it must appear explicitly in the user's CURRENT statement.
-    explicit=next((p for p in await sheet(approved_projects,store)
-                   if p.casefold() in text.casefold()),None)
+    explicit=await sheet(explicit_project_in_message,store,text)
     values["Проєкт"]=explicit or ""
     if attachments["documents"]:
         values["Коментар"]=(values.get("Коментар","")+"\n"+
