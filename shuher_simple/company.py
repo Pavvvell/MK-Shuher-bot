@@ -11,7 +11,7 @@ BUSINESS_TABS=("Заявки","Закупка","Склад","Доручення"
 def build_company_context(is_owner,access):
     access=access if isinstance(access,dict) else {}
     rights=", ".join(
-        f"{name} ({'читання й запис' if mode=='write' else 'лише читання'})"
+        f"{name} ({'читання й запис' if mode=='write' else 'лише запис' if mode=='write_only' else 'лише читання'})"
         for name,mode in access.items() if not name.startswith("_Shuher_")
     ) or "немає дозволених розділів"
     role="ВЛАСНИК" if is_owner else "ПРАЦІВНИК"
