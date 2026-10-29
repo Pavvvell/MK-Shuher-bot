@@ -4,6 +4,7 @@ Each image belongs to at most one financial operation. A photo of goods
 cannot be used as invoice evidence, and bank-card payment evidence must
 never be equated with a separate supplier invoice.
 """
+import re
 from decimal import Decimal, InvalidOperation
 
 IMAGE_KINDS=frozenset(("card_payment","goods_photo","invoice","other"))
@@ -148,3 +149,36 @@ def validate_persistence(package):
     if package["unassigned"]:
         raise ValueError("Є невизначені фото: їх не можна мовчки відкидати.")
     return True
+
+
+def is_invoice_submission(text):
+    """Identify an explicit document SUBMISSION, not commentary about invoices.
+
+    The old substring matcher interpreted an owner's explanation of
+    three unrelated photos as a command to draft ANOTHER invoice.
+    """
+    candidate=str(text or "").casefold().strip()
+    if not candidate:
+        return False
+    if re.search(r"^(?:перше|перші|перша|друге|другі|друга|третє|третя|"
+                 r"поясню|ти|як|чому|звідки|ні[, ]|що б|що за|"
+                 r"вони не|це не)\b",candidate):
+        return False
+    if any(s in candidate for s in
+           ("не стосуються","не відносяться","не пов'язано",
+            "окремі документи","це два різних")):
+        return False
+    explicit=(
+        "це рахунок","ось рахунок","виставили рахунок",
+        "надсилаю рахунок","скидаю рахунок",
+        "рахунок на оплату","рахунок до оплати","рахунок-фактура",
+        "надсилаю оплату","підтвердження оплати",
+        "скрін оплати","чек оплати",
+    )
+    if any(candidate.startswith(s) for s in explicit):
+        return True
+    action=re.search(r"\b(?:оформи|оформляй|запиши|зареєструй|"
+                     r"проведи|прийми|передай|подай)\b",candidate)
+    return bool(action and any(s in candidate for s in
+        ("рахунк","оплат","картк","чек")))
+
