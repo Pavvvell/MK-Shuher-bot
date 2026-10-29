@@ -94,7 +94,7 @@ class StoreAccessTests(unittest.TestCase):
             store.grant(1769804789,"Заявки",mode,42)
         self.assertEqual(store._upsert.call_count,4)
         self.assertEqual(
-            [args.args[3][2] for args in store._upsert.call_args_list],
+            [args.args[2][2] for args in store._upsert.call_args_list],
             ["read","write_only","write","none"],
         )
 
