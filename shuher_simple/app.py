@@ -272,6 +272,9 @@ async def stage_append(uid,chat,person,table,text):
     resolved,mode=await sheet(choose,uid,table)
     if mode!="write":
         raise ValueError("Для додавання потрібен дозвіл на запис у «"+resolved+"».")
+    if resolved=="Рахунки":
+        await stage_invoice(uid,chat,person,text)
+        return
     state=await sheet(store.get_dialogue,uid)
     _,values,_=await parse_request(text,resolved,list((await sheet(permission,uid))),
                                    force="append",history=history_excerpt(state))
