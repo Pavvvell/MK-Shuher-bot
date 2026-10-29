@@ -501,6 +501,15 @@ async def handle_natural(uid,chat,person,text):
     access=await sheet(permission,uid)
     if not access:
         return False
+    project_match=re.match(
+        r"^(?:додай|створи|зареєструй|хочу додати|потрібен)\s+"
+        r"(?:новий\s+)?проєкт\s+(.+)$",text,re.IGNORECASE)
+    if project_match:
+        await stage_project_request(uid,chat,person,project_match.group(1))
+        return True
+    if text_mentions_invoice(text):
+        await stage_invoice(uid,chat,person,text)
+        return True
     state=await sheet(store.get_dialogue,uid)
     action=await interpret_natural(text,access,uid in owners,ask_model,
                                    history_excerpt(state))
@@ -522,7 +531,10 @@ async def handle_natural(uid,chat,person,text):
         await send(chat,await read_answer(uid,action["table"],text))
         return True
     if intent=="append":
-        await stage_append(uid,chat,person,action["table"],text)
+        if action["table"]=="Рахунки":
+            await stage_invoice(uid,chat,person,text)
+        else:
+            await stage_append(uid,chat,person,action["table"],text)
         return True
     table=action["table"]
     description=action["target"]
@@ -573,7 +585,7 @@ async def handle_command(uid,chat,person,text):
                "Будь-який запис — тільки після твого «так» текстом.\n\n"
                "Корисні команди за бажанням: /new — почати нову розмову; "
                "/analyze — розібрати надіслані фото; /history — пошук у старих записах; /cancel — скасувати чернетку; "
-               "/tables — доступні розділи; /id — твій ID; "
+               "/tables — розділи; /projects — проєкти; /projectrequest — новий проєкт; /invoice — рахунок; /id — твій ID; "
                "/use Назва — вибрати таблицю для /add або /ask; "
                "/export — скачати таблицю.")
         if owner:
@@ -635,6 +647,41 @@ async def handle_command(uid,chat,person,text):
         await send(chat,"Незавершений запис скасовано.")
         return
 
+    if cmd=="/projects":
+        if not await sheet(permission,uid):
+            await send(chat,"Довідник проєктів доступний користувачам із доступом до Шухера.")
+            return
+        names=await sheet(approved_projects,store)
+        await send(chat,"Затверджені проєкти:\n"+
+                        "\n".join(f"{i}. {name}" for i,name in enumerate(names,1))+
+                        "\n\nДодати новий: /projectrequest Назва")
+        return
+    if cmd=="/projectrequest":
+        await stage_project_request(uid,chat,person,arg)
+        return
+    if cmd in ("/projectapprove","/projectreject"):
+        if not owner:
+            await send(chat,"Додавати або відхиляти проєкти може тільки власник.")
+            return
+        if not arg:
+            await send(chat,"Вкажи ID запиту після "+cmd)
+            return
+        headers,_,row=await sheet(store._lookup,"Запити на проєкти",arg)
+        fields={h:(row[i] if i<len(row) else "") for i,h in enumerate(headers)}
+        if fields.get("Статус")!="Очікує погодження":
+            await send(chat,"Цей запит не очікує погодження.")
+            return
+        action="project_approve" if cmd=="/projectapprove" else "project_reject"
+        await sheet(store.save_pending,uid,"Запити на проєкти",{
+            "kind":action,"record_id":arg,
+        })
+        await send(chat,("ПОГОДИТИ" if action=="project_approve" else "ВІДХИЛИТИ")+
+                   " новий проєкт «"+str(fields.get("Назва проєкту"))+
+                   "»?\nПідтверди «так» або «ні».")
+        return
+    if cmd=="/invoice":
+        await stage_invoice(uid,chat,person,arg or "Рахунок на оплату")
+        return
     if cmd=="/today":
         if not owner:
             await send(chat,"Підсумок усіх закупівель доступний тільки власнику.")
