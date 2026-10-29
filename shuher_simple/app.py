@@ -308,6 +308,15 @@ async def stage_append(uid,chat,person,table,text):
         await sheet(store.save_dialogue,uid,remember_exchange(state,text,tip))
         await send(chat,tip)
         return
+    if resolved=="Доручення":
+        if not clean.get("Завдання") or not clean.get("Виконавець"):
+            raise ValueError("Для доручення потрібні виконавець і конкретне завдання.")
+        staff=await sheet(store.users)
+        grants=await sheet(store.data,"_Shuher_Access")
+        if authorized_recipient(clean["Виконавець"],staff,grants) is None:
+            raise ValueError("Виконавця не знайдено серед зареєстрованих працівників "
+                             "із правом читання «Доручень». Уточни ім'я.")
+        clean.setdefault("Статус","Нове")
     if resolved=="Заявки":
         phrase=text.casefold()
         needs_search=any(x in phrase for x in (
