@@ -146,6 +146,69 @@ class SheetsStore:
         self.update(name,1,cleaned)
         return cleaned
 
+    def access_panel(self,uid):
+        """Read staff record, current permissions and live tab names in 2 API calls.
+
+        Access UI must not call permissions(), because it resolves the
+        spreadsheet's sheet names separately for every access row.
+        """
+        titles=self.tables()
+        ranges=[quoted(USERS)+"!A1:E4000",quoted(GRANTS)+"!A1:D4000"]
+        response=self.client.values().batchGet(
+            spreadsheetId=self.id,ranges=ranges,
+            valueRenderOption="FORMATTED_VALUE").execute()
+        chunks=response.get("valueRanges",[])
+        users=chunks[0].get("values",[]) if len(chunks)>0 else []
+        grants=chunks[1].get("values",[]) if len(chunks)>1 else []
+        record=next((row_values(row,5) for row in users[1:]
+                     if row and str(row[0])==str(uid)),None)
+        if not record:
+            raise ValueError("Користувача не знайдено. Нехай напише /start.")
+        lookup={name.casefold():name for name in titles}
+        access={}
+        for row in grants[1:]:
+            if (len(row)>2 and str(row[0])==str(uid)
+                    and row[2] in ("read","write_only","write")):
+                title=lookup.get(str(row[1]).casefold())
+                if title:
+                    access[title]=str(row[2])
+        return {"record":record,"access":access,"titles":titles,"grants":grants}
+
+    def grant_from_button(self,uid,token,mode,owner):
+        """Apply one trusted owner's button immediately, returning fresh UI data.
+
+        Avoid redundant Sheets reads after the write: the result already has
+        the new permissions for rendering an updated inline keyboard.
+        """
+        from access_ui import READ_ONLY_TABS, title_for
+        if mode not in ("read","write_only","write","none"):
+            raise ValueError("Некоректний режим доступу.")
+        panel=self.access_panel(uid)
+        title=title_for(panel["titles"],token)
+        if title in READ_ONLY_TABS and mode in ("write","write_only"):
+            raise ValueError("Цей розділ доступний працівникам тільки для читання.")
+        old=panel["access"].get(title,"none")
+        if old==mode:
+            return panel,False
+        row=[str(uid),title,mode,str(owner)]
+        matches=[i for i,existing in enumerate(panel["grants"][1:],2)
+                 if len(existing)>1 and str(existing[0])==str(uid)
+                 and str(existing[1]).casefold()==title.casefold()]
+        # One targeted update is faster than rewriting the whole access sheet.
+        # Update all historical duplicates, if any; last row wins when read.
+        if matches:
+            for row_no in matches:
+                self.client.values().update(
+                    spreadsheetId=self.id,range=quoted(GRANTS)+f"!A{row_no}:D{row_no}",
+                    valueInputOption="RAW",body={"values":[row]}).execute()
+        else:
+            self.append(GRANTS,row)
+        if mode=="none":
+            panel["access"].pop(title,None)
+        else:
+            panel["access"][title]=mode
+        return panel,True
+
     def grant(self,uid,table,mode,owner):
         from access_ui import READ_ONLY_TABS
         if not self.user(uid):
