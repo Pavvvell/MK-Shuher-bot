@@ -3,7 +3,7 @@ import unittest
 
 from purchase_bundle import (
     validate_package, grouped_preview, missing_invoice_project,
-    apply_invoice_project, validate_persistence,
+    apply_invoice_project, validate_persistence, is_invoice_submission,
 )
 
 
@@ -28,6 +28,26 @@ def sample():
 
 
 class PurchaseBundleTests(unittest.TestCase):
+    def test_owner_explains_unrelated_photos_without_creating_bill(self):
+        examples=(
+            "перше фото — це оплата, друге товар, третє рахунок окремий",
+            "перші два фото не стосуються третього рахунку",
+            "що блять, оплата карткою не відноситься до цього рахунку",
+            "ти якось відправиш рахунок бухгалтерії?",
+            "ні, це окремі документи, не відносяться",
+        )
+        for text in examples:
+            with self.subTest(text=text):
+                self.assertFalse(is_invoice_submission(text))
+
+    def test_actual_invoice_request_is_recognized(self):
+        for text in ("це рахунок на оплату, проєкт STF",
+                     "ось рахунок проєкт Мет обробка",
+                     "виставили рахунок 474 гривні",
+                     "оформи рахунок на проєкт ДП"):
+            with self.subTest(text=text):
+                self.assertTrue(is_invoice_submission(text))
+
     def test_invoice_and_bank_charge_remain_separate(self):
         group=validate_package(sample(),3)
         self.assertEqual(group["images"],{
