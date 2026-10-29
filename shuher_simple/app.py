@@ -942,11 +942,45 @@ async def handle_message(update):
             await send(chat,"Вибери номер позиції зі списку або «ні» для скасування.")
             return
         if pending and text.casefold() in ("так","да","yes","підтверджую"):
+            payload=pending["payload"]
+            if payload.get("kind")=="project_request":
+                if not await sheet(permission,uid):
+                    await send(chat,"Доступ відкликано. Запит не надіслано.")
+                    return
+                created=await sheet(store.append_project_request,
+                                    payload["record_id"],payload["name"],
+                                    user_label(person),payload.get("reason",""))
+                await sheet(store.clear_pending,uid)
+                if created:
+                    await ask_owner_about_project(uid,chat,payload["name"],
+                                                  payload["record_id"])
+                await send(chat,"Запит на проєкт «"+payload["name"]+
+                           "» передано власнику на погодження." if created
+                           else "Цей запит уже записано, повторно не додав.")
+                return
+            if payload.get("kind") in ("project_approve","project_reject"):
+                if uid not in owners:
+                    await send(chat,"Рішення щодо нових проєктів приймає тільки власник.")
+                    return
+                rid=payload["record_id"]
+                if payload["kind"]=="project_approve":
+                    result,name=await sheet(approve_new_project,store,rid,user_label(person))
+                    await sheet(store.update_field,"Запити на проєкти",rid,
+                                "Дата рішення",datetime.now(KYIV).strftime("%d.%m.%Y %H:%M"))
+                    await sheet(store.clear_pending,uid)
+                    await send(chat,"Проєкт «"+name+"» погоджено й додано до довідника.")
+                else:
+                    await sheet(store.update_field,"Запити на проєкти",rid,"Статус","Відхилено")
+                    await sheet(store.update_field,"Запити на проєкти",rid,"Погодив",user_label(person))
+                    await sheet(store.update_field,"Запити на проєкти",rid,"Дата рішення",
+                                datetime.now(KYIV).strftime("%d.%m.%Y %H:%M"))
+                    await sheet(store.clear_pending,uid)
+                    await send(chat,"Запит на новий проєкт відхилено.")
+                return
             table,mode=await sheet(choose,uid,pending["table"])
             if mode!="write":
                 await send(chat,"Право запису вже відкликано. /cancel")
                 return
-            payload=pending["payload"]
             if payload.get("kind")=="status":
                 changed=await sheet(store.update_status,table,payload["record_id"],
                                     payload["field"],payload["value"],payload["expected_old"])
@@ -958,6 +992,18 @@ async def handle_message(update):
             added,linked=await sheet(store.append_workflow,table,payload["values"],
                                     payload["record_id"],user_label(person))
             await sheet(store.clear_pending,uid)
+            if table=="Рахунки" and added:
+                try:
+                    await notify_owner_invoice(uid,payload["record_id"],
+                                               payload["values"],payload.get("attachments",{}))
+                finally:
+                    state=await sheet(store.get_dialogue,uid)
+                    await sheet(store.save_dialogue,uid,clear_attachments(state))
+                await send(chat,"Документ записано для проєкту «"+
+                           payload["values"]["Проєкт"]+
+                           "» і передано власнику на перевірку. "
+                           "Бухгалтерії не відправлено.")
+                return
             if table=="Заявки":
                 await send(chat,"Заявка "+payload["record_id"]+
                            " записана й автоматично пов'язана із закупівлею ZK-"+
