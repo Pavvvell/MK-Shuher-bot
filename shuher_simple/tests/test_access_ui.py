@@ -4,7 +4,7 @@ from unittest.mock import Mock
 
 from access_ui import (
     MODE_CODE, MODE_LABEL, READ_ONLY_TABS, can_read, can_write,
-    list_view, user_view, title_for, token_for, preview_view,
+    list_view, user_view, title_for, token_for,
 )
 from store import SheetsStore, GRANTS
 
@@ -49,14 +49,18 @@ class AccessUITests(unittest.TestCase):
             self.assertEqual(can_write(mode),writing)
         self.assertEqual(MODE_LABEL["write_only"],"Запис")
 
-    def test_preview_requires_explicit_confirmation(self):
-        text,markup=preview_view(
-            "1769804789","Юрій",[("Склад","none","write_only")],
-            "su:r:1769804789:abc:w:n",
+    def test_buttons_apply_directly_without_confirmation(self):
+        text,markup=user_view(
+            ["1769804789","test","Юрій","",""],{},
+            ["Заявки","Закупка"],
         )
-        self.assertIn("Підтвердити зміну",text)
-        self.assertEqual(markup["inline_keyboard"][0][0]["callback_data"],
-                         "su:r:1769804789:abc:w:n")
+        self.assertIn("Натискання одразу змінює",text)
+        callbacks=[b["callback_data"] for row in markup["inline_keyboard"]
+                   for b in row]
+        self.assertIn("su:q:1769804789:"+token_for("Заявки")+":w",callbacks)
+        self.assertFalse(any(item.startswith("su:r:") for item in callbacks))
+        self.assertFalse(any("Підтвердити" in row["text"]
+                             for line in markup["inline_keyboard"] for row in line))
 
     def test_user_pagination(self):
         users=[[str(100000+i),"","Працівник"+str(i),"",""] for i in range(19)]
@@ -107,6 +111,63 @@ class StoreAccessTests(unittest.TestCase):
         rows=values.update.call_args.kwargs["body"]["values"]
         self.assertIn(["1769804789","Кадри","none","42"],rows)
         self.assertIn(["456","Доручення","read","123"],rows)
+
+    def test_fast_access_panel_batches_users_and_access(self):
+        store,values=self.fixture()
+        store.client.values.return_value.batchGet.return_value.execute.return_value={
+            "valueRanges":[
+                {"values":[["Telegram ID","Username","Ім'я","Активна","Створено"],
+                           ["1769804789","user","Юрій","",""]]},
+                {"values":[
+                    ["Telegram ID","Таблиця","Доступ","Змінив"],
+                    ["1769804789","Заявки","write","123"],
+                    ["1769804789","Кадри","write_only","123"],
+                    ["456","Доручення","read","123"],
+                ]},
+            ],
+        }
+        panel=store.access_panel(1769804789)
+        self.assertEqual(panel["record"][2],"Юрій")
+        self.assertEqual(panel["access"]["Кадри"],"write_only")
+        self.assertEqual(panel["access"]["Заявки"],"write")
+        self.assertNotIn("Доручення",panel["access"])
+        self.assertEqual(store.client.values.return_value.batchGet.call_count,1)
+        self.assertEqual(store.client.values.return_value.batchGet.call_args.kwargs[
+            "ranges"],["'_Shuher_Users'!A1:E4000","'_Shuher_Access'!A1:D4000"])
+
+    def test_one_tap_changes_permission_with_single_cell_update(self):
+        store,values=self.fixture()
+        panel={"record":["1769804789","user","Юрій","",""],
+               "titles":store.tables(),
+               "access":{"Заявки":"write","Кадри":"write_only"},
+               "grants":[
+                   ["Telegram ID","Таблиця","Доступ","Змінив"],
+                   ["1769804789","Заявки","write","123"],
+                   ["1769804789","Кадри","write_only","123"],
+                   ["456","Доручення","read","123"],
+               ]}
+        store.access_panel=lambda uid: {
+            **panel,"access":dict(panel["access"])}
+        updated,changed=store.grant_from_button(
+            1769804789,token_for("Заявки"),"read",42)
+        self.assertTrue(changed)
+        self.assertEqual(updated["access"]["Заявки"],"read")
+        kwargs=values.update.call_args.kwargs
+        self.assertEqual(kwargs["range"],"'_Shuher_Access'!A2:D2")
+        self.assertEqual(kwargs["body"]["values"],
+                         [["1769804789","Заявки","read","42"]])
+        self.assertEqual(values.update.call_count,1)
+
+    def test_one_tap_rejects_locked_table_and_owner_bypass(self):
+        store,values=self.fixture()
+        store.access_panel=lambda uid:{
+            "record":["1769804789","user","Юрій","",""],
+            "titles":["Проєкти","Заявки"],
+            "access":{},"grants":[["Telegram ID","Таблиця","Доступ","Змінив"]]}
+        with self.assertRaisesRegex(ValueError,"тільки для читання"):
+            store.grant_from_button(
+                1769804789,token_for("Проєкти"),"write",42)
+        self.assertFalse(values.update.called)
 
     def test_protected_tables_cannot_get_any_write(self):
         store,values=self.fixture()
