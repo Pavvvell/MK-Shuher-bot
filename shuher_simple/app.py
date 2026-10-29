@@ -667,7 +667,14 @@ async def handle_staff_outreach(uid,chat,text):
     state=await sheet(store.get_dialogue,uid)
     users=await sheet(store.users)
     try:
-        plan=delivery_plan(text,state["history"],users,owners)
+        history_for_send=state["history"]
+        # With newly queued photos, do not reuse a possibly unrelated old
+        # assistant quote. The image must be read before sharing its details.
+        if state.get("photos") and not re.search(r"\bщо\b",text,re.IGNORECASE):
+            history_for_send=[
+                item for item in state["history"] if item.get("role")=="user"
+            ]
+        plan=delivery_plan(text,history_for_send,users,owners)
     except ValueError as exc:
         if "Що саме передати" not in str(exc):
             raise
