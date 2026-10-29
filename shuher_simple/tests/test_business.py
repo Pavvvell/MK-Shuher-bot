@@ -68,11 +68,20 @@ class IntegrationRules(unittest.TestCase):
             saved[key] = dict(values)
             return True
         obj.append_record = fake_append
-        values = {"Найменування": "Гайки М12", "Кількість": "7", "Од. вим.": "шт."}
+        values = {"Проєкт": "STF", "Найменування": "Гайки М12", "Кількість": "7", "Од. вим.": "шт."}
         self.assertEqual(obj.append_workflow("Заявки", values, "REQ-1", "Петро"), (True, True))
         self.assertEqual(obj.append_workflow("Заявки", values, "REQ-1", "Петро"), (False, False))
         self.assertEqual(saved[("Закупка", "ZK-REQ-1")]["ID заявки"], "REQ-1")
         self.assertEqual(saved[("Заявки", "REQ-1")]["Статус"], "У закупці")
+
+    def test_request_requires_project(self):
+        obj=self.new_store()
+        obj.append_record=Mock()
+        with self.assertRaisesRegex(ValueError, "проєкт"):
+            obj.append_workflow("Заявки", {
+                "Найменування":"Гайка","Кількість":"10","Од. вим.":"шт."
+            },"R-1","Комірник")
+        obj.append_record.assert_not_called()
 
     def test_issue_blocked_if_stock_is_insufficient(self):
         obj = self.new_store()
