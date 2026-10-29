@@ -17,6 +17,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from store import SheetsStore
 from business import today_procurement, positive_quantity
 from company import build_company_context
+from knowledge import search_history, render_owner_rules
 from dialogue import queue_photo, remember_exchange, history_excerpt
 from media import (MAX_PHOTO_BYTES, telegram_file_bytes, transcribe_telegram_voice)
 from natural import interpret_natural, status_candidates, status_selection_text
@@ -32,6 +33,7 @@ class Settings(BaseSettings):
     openai_api_key:str
     openai_model:str="gpt-4.1-mini"
     spreadsheet_id:str
+    history_spreadsheet_id:str=""
     owner_ids:str
     google_service_account_json_b64:str=""
     register_telegram_webhook:bool=False
@@ -42,6 +44,9 @@ owners={int(x.strip()) for x in settings.owner_ids.split(",") if x.strip()}
 if not owners:
     raise RuntimeError("OWNER_IDS must contain at least one Telegram numeric ID.")
 store=SheetsStore(settings.spreadsheet_id,settings.google_service_account_json_b64)
+history_store=(SheetsStore(settings.history_spreadsheet_id,
+                          settings.google_service_account_json_b64)
+               if settings.history_spreadsheet_id else None)
 openai=AsyncOpenAI(api_key=settings.openai_api_key,timeout=35)
 telegram_api=f"https://api.telegram.org/bot{settings.telegram_bot_token}"
 inflight=asyncio.Lock()
@@ -169,7 +174,7 @@ async def read_answer(uid,table,question):
 
 
 CHAT_SYSTEM=(
-    "Ти Шухер — корисний українськомовний помічник на виробництві. "
+    "Ти Шухер — універсальний українськомовний помічник підприємства. "
     "Спілкуйся вільно, як звичайний ChatGPT: відповідай на загальні питання, "
     "аналізуй ідеї, допомагай вибирати інструменти й формулювати характеристики. "
     "Веди природний діалог, пам'ятай попередні уточнення в межах переданого контексту. "
@@ -184,6 +189,43 @@ CHAT_SYSTEM=(
     "'оформляй заявку', і сервер покаже чернетку для підтвердження. "
     "Ніколи не оголошуй запис підтвердженим без фактичного серверного підтвердження."
 )
+
+
+async def live_rules():
+    try:
+        _,rows=await sheet(store.read_table,"Правила Шухера")
+        return render_owner_rules(rows)
+    except Exception:
+        log.exception("Cannot load Shuher knowledge rules")
+        return ""
+
+
+async def historical_answer(uid,chat,query):
+    if history_store is None:
+        await send(chat,"Історичний реєстр ще не підключений у налаштуваннях бота.")
+        return
+    access=await sheet(permission,uid)
+    if not access:
+        await send(chat,"Немає доступу до історичних розділів.")
+        return
+    result=await sheet(search_history,history_store,access,uid in owners,query)
+    if not result["results"]:
+        await send(chat,result.get("error","У старих записах немає підтвердженого збігу."))
+        return
+    payload=json.dumps(result,ensure_ascii=False)[:19000]
+    response=await ask_model([
+        {"role":"system","content":
+         "Ти Шухер. Відповідай українською тільки за знайденими "
+         "історичними рядками. Обов'язково зазначай, що ці дані "
+         "ІСТОРИЧНІ й не підтверджують теперішню оплату, доставку, "
+         "залишки чи актуальність постачальника. Наводь назву вкладки, "
+         "ідентифікатор/дату або номер рядка, коли доступні. "
+         "Якщо результати часткові або неоднозначні — скажи це. "
+         "Не вигадуй відсутні факти й не перетворюй старі записи "
+         "на нові операції. Не показуй інформацію поза переданими даними."},
+        {"role":"user","content":"Питання: "+str(query)[:800]+"\nДані: "+payload},
+    ],max_tokens=1150)
+    await send(chat,response[:3650])
 
 
 async def chat_answer(uid,chat,text):
@@ -203,8 +245,10 @@ async def chat_answer(uid,chat,text):
             bot_call,settings.telegram_bot_token,item["file_id"],MAX_PHOTO_BYTES)
         url="data:"+item.get("mime","image/jpeg")+";base64,"+base64.b64encode(data).decode("ascii")
         content.append({"type":"image_url","image_url":{"url":url,"detail":"auto"}})
+    rules=await live_rules()
     messages=[{"role":"system","content":
-               CHAT_SYSTEM+"\n\n"+build_company_context(uid in owners,access)}]
+               CHAT_SYSTEM+"\n\n"+build_company_context(uid in owners,access)+
+               "\n\n"+rules}]
     for item in state["history"]:
         messages.append({"role":item["role"],"content":item["content"]})
     messages.append({"role":"user","content":content if pictures else input_text[:4200]})
@@ -238,9 +282,9 @@ async def stage_append(uid,chat,person,table,text):
         await send(chat,tip)
         return
     if resolved=="Заявки":
-        missing=[f for f in ("Найменування","Кількість","Од. вим.") if not clean.get(f)]
+        missing=[f for f in ("Проєкт","Найменування","Кількість","Од. вим.") if not clean.get(f)]
         if missing:
-            tip="Щоб оформити заявку, уточни: "+", ".join(missing)+"."
+            tip="Щоб оформити заявку, обов’язково уточни: "+", ".join(missing)+"."
             await sheet(store.save_dialogue,uid,remember_exchange(state,text,tip))
             await send(chat,tip)
             return
@@ -299,6 +343,9 @@ async def handle_natural(uid,chat,person,text):
     if intent=="balance":
         await send(chat,await sheet(store.balances,action["target"]))
         return True
+    if intent=="history":
+        await historical_answer(uid,chat,action["target"])
+        return True
     if intent=="read":
         await send(chat,await read_answer(uid,action["table"],text))
         return True
@@ -353,7 +400,7 @@ async def handle_command(uid,chat,person,text):
                "«болти М8×30 замовили», «оформляй заявку», «покажи залишки». "
                "Будь-який запис — тільки після твого «так» текстом.\n\n"
                "Корисні команди за бажанням: /new — почати нову розмову; "
-               "/analyze — розібрати надіслані фото; /cancel — скасувати чернетку; "
+               "/analyze — розібрати надіслані фото; /history — пошук у старих записах; /cancel — скасувати чернетку; "
                "/tables — доступні розділи; /id — твій ID; "
                "/use Назва — вибрати таблицю для /add або /ask; "
                "/export — скачати таблицю.")
@@ -423,6 +470,13 @@ async def handle_command(uid,chat,person,text):
         headers,rows=await sheet(store.read_table,"Закупка")
         date=datetime.now(KYIV).strftime("%d.%m.%Y")
         await send(chat,today_procurement(headers,rows,date))
+        return
+    if cmd=="/history":
+        if not arg:
+            await send(chat,"Напиши, що саме знайти в попередніх заявках, "
+                            "наприклад: /history STF-02 труба")
+            return
+        await historical_answer(uid,chat,arg)
         return
     if cmd=="/balance":
         accessible=await sheet(permission,uid)
