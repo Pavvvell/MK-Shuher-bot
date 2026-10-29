@@ -230,11 +230,30 @@ def proposed_message_from_history(history,record):
     content=str(last.get("content") or "")
     forms=_forms(record)
     forms.add(_norm(_identity(record)))
-    for line in content.splitlines():
+    lines=content.splitlines()
+    for index,line in enumerate(lines):
         candidate=line.strip().lstrip("> *-").strip()
         head,separator,_=candidate.partition(",")
-        if separator and 35<=len(candidate)<=1900 and _norm(head) in forms:
-            return candidate
+        if not separator or _norm(head) not in forms:
+            continue
+        # Telegram wraps text visually, and GPT may insert hard newlines.
+        # Keep continuation lines of this ONE addressed message only.
+        parts=[candidate]
+        for following in lines[index+1:]:
+            clean=following.strip().lstrip("> ").strip()
+            if not clean or clean.startswith(("*","—","---")):
+                break
+            if re.match(
+                r"^(?:Підтвердження|Попереднє|Насправді|Не можу|Чи треба)",
+                clean,re.IGNORECASE,
+            ):
+                break
+            if len(" ".join(parts))+len(clean)>1900:
+                break
+            parts.append(clean)
+        proposed=" ".join(parts)
+        if 35<=len(proposed)<=1900:
+            return proposed
     return None
 
 
