@@ -618,7 +618,7 @@ async def handle_staff_outreach(uid,chat,text):
             return item["name"],False
 
     results=await asyncio.gather(*(deliver(item) for item in plan))
-    summary="\\n".join(
+    summary="\n".join(
         ("✅ "+name+": повідомлення надіслано."
          if success else
          "❌ "+name+": Telegram не прийняв повідомлення; перевір, чи людина відкрила бота.")
