@@ -20,6 +20,10 @@ from company import build_company_context
 from knowledge import search_history, render_owner_rules
 from receipt_pdf import photos_to_pdf
 from dialogue import queue_photo, queue_document, clear_attachments, remember_exchange, history_excerpt
+from access_ui import (button as access_button, keyboard as access_keyboard, list_view,
+                       user_view, manual_view, modes_view, preview_view,
+                       managed_changes, PRESETS, MANAGED_TABS, READ_ONLY_TABS,
+                       MODE_LABEL)
 from projects import (canonical_project, approved_projects, select_project_message,
                       select_project_answer, requested_new_project, approve_new_project,
                       explicit_project_in_message)
@@ -81,9 +85,14 @@ async def notify_owners(uid,person):
     for owner in owners:
         if owner==uid:continue
         try:
-            await send(owner,f"Шухер: новий користувач {tag}. Telegram ID: {uid}. "
-                             f"Надати доступ: /grant {uid} read НазваТаблиці "
-                             f"або /grant {uid} write НазваТаблиці")
+            await bot_call("sendMessage",{
+                "chat_id":owner,
+                "text":f"Шухер: новий користувач {tag}. Telegram ID: {uid}.\n"
+                       "Натисни кнопку, щоб вибрати роль і права доступу.",
+                "reply_markup":access_keyboard([
+                    [access_button("🔐 Налаштувати доступ",f"su:u:{uid}")]
+                ]),
+            })
         except Exception:
             log.exception("Cannot notify owner of registration")
 
@@ -655,6 +664,166 @@ async def handle_natural(uid,chat,person,text):
     return True
 
 
+async def show_owner_users(chat,page=0,edit_id=None):
+    people=await sheet(store.users)
+    # Keep a stable, predictable ordering across pages.
+    people.sort(key=lambda record:int(record[0]) if str(record[0]).isdigit() else 0)
+    text,markup=list_view(people,page)
+    await render_access_keyboard(chat,text,markup,edit_id)
+
+
+async def render_access_keyboard(chat,text,markup,edit_id=None):
+    """Edit an existing inline view; fall back to a fresh bot message."""
+    if edit_id:
+        try:
+            await bot_call("editMessageText",{
+                "chat_id":chat,"message_id":edit_id,
+                "text":text,"reply_markup":markup,
+            })
+            return
+        except Exception:
+            log.warning("Cannot edit old access panel, sending new panel",exc_info=True)
+    await bot_call("sendMessage",{
+        "chat_id":chat,"text":text,"reply_markup":markup,
+    })
+
+
+async def access_profile_view(uid,chat,edit_id=None):
+    record=await sheet(store.user,uid)
+    if not record:
+        raise ValueError("Користувача не знайдено. Нехай напише /start.")
+    if uid in owners:
+        await render_access_keyboard(chat,
+            "👑 "+(record[2] or record[1] or str(uid))+
+            "\nЦе власник. У нього повний доступ; змінювати його не можна.",
+            access_keyboard([[access_button("⬅️ До списку","su:l:0")]]),edit_id)
+        return
+    access=await sheet(store.permissions,uid,owners)
+    text,markup=user_view(record,access)
+    await render_access_keyboard(chat,text,markup,edit_id)
+
+
+async def notify_access_changed(uid):
+    try:
+        await send(uid,"Шухер: власник оновив твої доступи. "
+                       "Напиши /tables, щоб побачити свої розділи.")
+    except Exception:
+        log.info("Could not notify Telegram user %s about permissions",uid)
+
+
+async def handle_access_callback(callback):
+    """Owner-only stateful menu; all mutations require a separate confirm click."""
+    sender=callback.get("from") or {}
+    uid=int(sender.get("id") or 0)
+    cid=callback.get("id")
+    message=callback.get("message") or {}
+    chatdata=message.get("chat") or {}
+    chat=chatdata.get("id")
+    mid=message.get("message_id")
+    data=str(callback.get("data") or "")
+    if not cid:
+        return
+    if uid not in owners or chatdata.get("type")!="private" or chat!=uid:
+        await bot_call("answerCallbackQuery",{
+            "callback_query_id":cid,"text":"Керувати доступами може тільки власник.",
+            "show_alert":True})
+        return
+    # Reply to callback immediately so Telegram does not leave a spinner.
+    await bot_call("answerCallbackQuery",{"callback_query_id":cid})
+    if not data.startswith("su:"):
+        return
+    chunks=data.split(":")
+    try:
+        if len(chunks)<3:
+            raise ValueError("Кнопка застаріла.")
+        action=chunks[1]
+        if action=="l" and len(chunks)==3:
+            page=int(chunks[2])
+            await show_owner_users(chat,page,mid)
+            return
+        target=int(chunks[2])
+        if target<=0:
+            raise ValueError("Некоректний Telegram ID.")
+        record=await sheet(store.user,target)
+        if not record:
+            raise ValueError("Користувача не знайдено. Нехай напише /start.")
+        if action=="u" and len(chunks)==3:
+            await access_profile_view(target,chat,mid)
+            return
+        if target in owners:
+            raise ValueError("Права власника змінювати не можна.")
+        access=await sheet(store.permissions,target,owners)
+        label=("@"+record[1]) if record[1] else (record[2] or str(target))
+        if action in ("p","c") and len(chunks)==4:
+            key=chunks[3]
+            tabs=await sheet(store.tables)
+            name,changes=managed_changes(access,tabs,key)
+            if action=="p":
+                text,markup=preview_view(target,label+" · "+name,changes,
+                                         f"su:c:{target}:{key}")
+                text+="\n\nЦей набір замінить права на 7 основних розділів. "
+                text+="Інші майбутні модулі не зачепить."
+                await render_access_keyboard(chat,text,markup,mid)
+                return
+            changed=await sheet(store.apply_access_profile,target,key,uid)
+            if changed:
+                await notify_access_changed(target)
+            await access_profile_view(target,chat,mid)
+            return
+        if action=="z" and len(chunks)==3:
+            changes=[(tab,mode,"none") for tab,mode in access.items()
+                     if mode in ("read","write")]
+            text,markup=preview_view(target,label+" · забрати ВСІ права",
+                                      changes,f"su:w:{target}")
+            text+="\n\nЦе відкличе доступ до ВСІХ таблиць, у тому числі до нових модулів."
+            await render_access_keyboard(chat,text,markup,mid)
+            return
+        if action=="w" and len(chunks)==3:
+            changed=await sheet(store.revoke_all_access,target,uid)
+            if changed:
+                await notify_access_changed(target)
+            await access_profile_view(target,chat,mid)
+            return
+        if action=="m" and len(chunks)==4:
+            page=int(chunks[3])
+            tabs=await sheet(store.tables)
+            text,markup=manual_view(target,tabs,access,page)
+            await render_access_keyboard(chat,text,markup,mid)
+            return
+        if action=="t" and len(chunks)==5:
+            index,page=int(chunks[3]),int(chunks[4])
+            tabs=await sheet(store.tables)
+            if not 0<=index<len(tabs):
+                raise ValueError("Таблиця не знайдена.")
+            tab=tabs[index]
+            text,markup=modes_view(target,tab,index,page,access.get(tab,"none"))
+            await render_access_keyboard(chat,text,markup,mid)
+            return
+        if action in ("x","y") and len(chunks)==6:
+            index,mode,page=int(chunks[3]),chunks[4],int(chunks[5])
+            tabs=await sheet(store.tables)
+            if not 0<=index<len(tabs) or mode not in ("read","write","none"):
+                raise ValueError("Некоректний вибір доступу.")
+            tab=tabs[index]
+            if tab in READ_ONLY_TABS and mode=="write":
+                raise ValueError("Цей розділ працівникам доступний тільки для читання.")
+            if action=="x":
+                text,markup=preview_view(
+                    target,label,[(tab,access.get(tab,"none"),mode)],
+                    f"su:y:{target}:{index}:{mode}:{page}")
+                await render_access_keyboard(chat,text,markup,mid)
+                return
+            await sheet(store.grant,target,tab,mode,uid)
+            await notify_access_changed(target)
+            await access_profile_view(target,chat,mid)
+            return
+        raise ValueError("Кнопка застаріла. Відкрий /users.")
+    except ValueError as exc:
+        await render_access_keyboard(chat,
+            "Не вдалося змінити доступ: "+str(exc)+"\nСпробуй /users.",
+            access_keyboard([[access_button("⬅️ Користувачі","su:l:0")]]),mid)
+
+
 async def handle_command(uid,chat,person,text):
     first,_,arg=text.partition(" ")
     cmd=first.split("@",1)[0].casefold()
@@ -683,7 +852,7 @@ async def handle_command(uid,chat,person,text):
                "/export — скачати таблицю.")
         if owner:
             intro+=("\n\nКерування лише для власника:\n"
-                    "/users — усі користувачі та їхні ID\n"
+                    "/users — усі користувачі й керування доступами кнопками\n"
                     "/today — сьогоднішні заявки у закупівлю\n"
                     "/create Назва | Колонка1, Колонка2 — створити вкладку\n"
                     "/grant ID read Назва — лише перегляд\n"
@@ -694,14 +863,11 @@ async def handle_command(uid,chat,person,text):
     if cmd=="/id":
         await send(chat,f"Твій Telegram ID: {uid}")
         return
-    if cmd=="/users":
+    if cmd in ("/users","/access"):
         if not owner:
-            await send(chat,"Лише власник може переглядати ID усіх користувачів.")
+            await send(chat,"Лише власник може переглядати ID та керувати доступами.")
             return
-        users=await sheet(store.users)
-        lines=[f"{x[0]} · @{x[1]}" if x[1] else f"{x[0]} · {x[2]}"
-               for x in users]
-        await send(chat,"Користувачі Шухера:\n"+"\n".join(lines))
+        await show_owner_users(chat)
         return
     if cmd=="/tables":
         accessible=await sheet(permission,uid)
@@ -1187,7 +1353,7 @@ async def lifespan(app:FastAPI):
         result=await bot_call("setWebhook",{
             "url":settings.public_base_url.rstrip("/")+"/telegram/webhook",
             "secret_token":settings.telegram_webhook_secret,
-            "allowed_updates":["message"],
+            "allowed_updates":["message","callback_query"],
             "drop_pending_updates":False})
         log.info("Registered Telegram webhook: %s",result.get("ok"))
     yield
@@ -1212,7 +1378,10 @@ async def webhook(request:Request,
         try:
             if await sheet(store.processed,update_id):
                 return {"ok":True,"duplicate":True}
-            await handle_message(body)
+            if body.get("callback_query"):
+                await handle_access_callback(body["callback_query"])
+            else:
+                await handle_message(body)
             await sheet(store.mark_processed,update_id)
         except Exception:
             log.exception("Failed to process Telegram update %s",update_id)
