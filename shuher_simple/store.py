@@ -295,8 +295,10 @@ class SheetsStore:
             raise ValueError("Таблицю не знайдено.")
         values=dict(values)
         if resolved=="Заявки":
-            if not values.get("Найменування") or not values.get("Од. вим."):
-                raise ValueError("У заявці обов'язкові найменування та одиниця виміру.")
+            if not all(values.get(name) and str(values.get(name)).strip().casefold()
+                       not in ("null","none","невідомо","-")
+                       for name in ("Проєкт","Найменування","Од. вим.")):
+                raise ValueError("У заявці обов'язкові проєкт, найменування та одиниця виміру.")
             positive_quantity(values.get("Кількість",""))
             if not self.resolve("Закупка"):
                 raise ValueError("Спочатку власник має створити вкладку «Закупка».")
