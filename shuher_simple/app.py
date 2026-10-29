@@ -923,6 +923,67 @@ async def draft_staff_message_from_context(text,state,recipients):
     return [str(item).strip() for item in drafts]
 
 
+async def stage_owner_task_order(uid,chat,person,text):
+    """Turn an explicit owner instruction to a worker into a task draft.
+
+    Pure informational messages still use direct staff outreach.
+    """
+    if uid not in owners:
+        return False
+    lowered = text.casefold()
+    explicit_task = bool(re.search(
+        r"\\b(?:доручи|доручити|постав.{0,15}завдання|запиши.{0,20}доручення)\\b",
+        lowered))
+    future_action = bool(re.search(
+        r"(?:напиши|написав|повідом|передай).{0,95}(?:щоб|коли|після)|"
+        r"(?:треба|потрібно).{0,25}щоб.{0,25}(?:написав|повідомив)",
+        lowered))
+    if not (explicit_task or future_action):
+        return False
+    users = await sheet(store.users)
+    state = await sheet(store.get_dialogue,uid)
+    recipients = choose_recipients(text,state["history"],users)
+    if not recipients or len(recipients) != 1:
+        return False
+    assigned = recipients[0]
+    grants = await sheet(store.data,"_Shuher_Access")
+    assignee = str(assigned[2] or assigned[1])
+    if authorized_recipient(assignee,users,grants) is None:
+        raise ValueError("Виконавець не має права читання «Доручень».")
+    prompt = (
+        "З тексту керівника виділи конкретне робоче доручення, яке має виконати "
+        "адресат. Відповідай виключно JSON-об'єктом із ключами Завдання, "
+        "Проєкт, Дедлайн. Не вигадуй дати, проєкт, номер ТТН, виконання "
+        "чи підтвердження доставки. Якщо дати немає, залиш Дедлайн порожнім. "
+        "Якщо немає чіткого завдання, залиш Завдання порожнім. "
+        "Адресат: " + assignee + ". Текст власника: " + text[:2400]
+    )
+    try:
+        extracted = json.loads(await ask_model(
+            [{"role":"system","content":"Формуй точний короткий робочий запис українською."},
+             {"role":"user","content":prompt}],max_tokens=350,json_mode=True))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    task = str(extracted.get("Завдання") or "").strip()
+    if len(task) < 12:
+        return False
+    values = {
+        "Виконавець":assignee,
+        "Завдання":task[:1200],
+        "Проєкт":str(extracted.get("Проєкт") or "")[:100],
+        "Дедлайн":str(extracted.get("Дедлайн") or "")[:100],
+        "Статус":"Нове",
+        "Постановник":user_label(person),
+    }
+    record_id="SH-"+datetime.now(KYIV).strftime("%Y%m%d%H%M")+"-"+secrets.token_hex(3).upper()
+    await sheet(store.save_pending,uid,"Доручення",{"record_id":record_id,"values":values})
+    await send(chat, "Підготував доручення для "+assignee+":\\n"+task+
+               "\\nПроєкт: "+(values["Проєкт"] or "не зазначено")+
+               "\\n\\nЗаписати в «Доручення» й повідомити виконавця? "
+               "Підтверди текстом «так» або «ні».")
+    return True
+
+
 async def handle_staff_outreach(uid,chat,text):
     """Send separate private Telegram messages only on explicit owner's order."""
     if uid not in owners or not is_send_request(text):
@@ -1475,6 +1536,8 @@ async def handle_message(update):
             return
         # Owner's direct Telegram-message instruction takes priority over
         # pending photo analysis and unrelated Google Sheets drafts.
+        if await stage_owner_task_order(uid,chat,person,text):
+            return
         if await handle_staff_outreach(uid,chat,text):
             return
         if text.startswith("/") and not from_voice:
