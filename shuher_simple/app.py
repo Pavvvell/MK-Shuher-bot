@@ -21,8 +21,7 @@ from knowledge import search_history, render_owner_rules
 from receipt_pdf import photos_to_pdf
 from dialogue import queue_photo, queue_document, clear_attachments, remember_exchange, history_excerpt
 from access_ui import (button as access_button, keyboard as access_keyboard,
-                       list_view, user_view, preview_view, title_for,
-                       CODE_MODE, MODE_CODE, MODE_LABEL, READ_ONLY_TABS,
+                       list_view, user_view, CODE_MODE, MODE_LABEL,
                        can_read, can_write)
 from projects import (canonical_project, approved_projects, select_project_message,
                       select_project_answer, requested_new_project, approve_new_project,
@@ -689,31 +688,20 @@ async def render_access_keyboard(chat,text,markup,edit_id=None):
 
 
 async def access_profile_view(uid,chat,edit_id=None):
-    record=await sheet(store.user,uid)
-    if not record:
-        raise ValueError("Користувача не знайдено. Нехай напише /start.")
+    panel=await sheet(store.access_panel,uid)
+    record=panel["record"]
     if uid in owners:
         await render_access_keyboard(chat,
             "👑 "+(record[2] or record[1] or str(uid))+
             "\nЦе власник. У нього повний доступ; змінювати його не можна.",
             access_keyboard([[access_button("⬅️ До списку","su:l:0")]]),edit_id)
         return
-    access=await sheet(store.permissions,uid,owners)
-    tabs=await sheet(store.tables)
-    text,markup=user_view(record,access,tabs)
+    text,markup=user_view(record,panel["access"],panel["titles"])
     await render_access_keyboard(chat,text,markup,edit_id)
 
 
-async def notify_access_changed(uid):
-    try:
-        await send(uid,"Шухер: власник оновив твої доступи. "
-                       "Напиши /tables, щоб побачити свої розділи.")
-    except Exception:
-        log.info("Could not notify Telegram user %s about permissions",uid)
-
-
 async def handle_access_callback(callback):
-    """Owner-only stateful menu; all mutations require a separate confirm click."""
+    """Owner's tap immediately updates one permission; no extra confirmation."""
     sender=callback.get("from") or {}
     uid=int(sender.get("id") or 0)
     cid=callback.get("id")
@@ -729,7 +717,8 @@ async def handle_access_callback(callback):
             "callback_query_id":cid,"text":"Керувати доступами може тільки власник.",
             "show_alert":True})
         return
-    # Reply to callback immediately so Telegram does not leave a spinner.
+    # Acknowledge tap before reading Sheets; the Telegram progress indicator
+    # disappears immediately instead of waiting for Google API operations.
     await bot_call("answerCallbackQuery",{"callback_query_id":cid})
     if not data.startswith("su:"):
         return
@@ -739,56 +728,37 @@ async def handle_access_callback(callback):
             raise ValueError("Кнопка застаріла.")
         action=chunks[1]
         if action=="l" and len(chunks)==3:
-            page=int(chunks[2])
-            await show_owner_users(chat,page,mid)
+            await show_owner_users(chat,int(chunks[2]),mid)
             return
         target=int(chunks[2])
         if target<=0:
             raise ValueError("Некоректний Telegram ID.")
-        record=await sheet(store.user,target)
-        if not record:
-            raise ValueError("Користувача не знайдено. Нехай напише /start.")
         if action=="u" and len(chunks)==3:
             await access_profile_view(target,chat,mid)
             return
         if target in owners:
             raise ValueError("Права власника змінювати не можна.")
-        access=await sheet(store.permissions,target,owners)
-        label=("@"+record[1]) if record[1] else (record[2] or str(target))
         if action=="d" and len(chunks)==3:
+            # Read-only tabs have no write buttons. Stay in list.
             await access_profile_view(target,chat,mid)
             return
-        if action in ("q","r"):
-            if (action=="q" and len(chunks)!=5) or (action=="r" and len(chunks)!=6):
-                raise ValueError("Кнопка застаріла.")
-            token,code=chunks[3:5]
+        if action=="q" and len(chunks)==5:
+            token,code=chunks[3:]
             if code not in CODE_MODE:
                 raise ValueError("Некоректний режим доступу.")
-            tabs=await sheet(store.tables)
-            tab=title_for(tabs,token)
-            mode=CODE_MODE[code]
-            old=access.get(tab,"none")
-            if tab in READ_ONLY_TABS and mode in ("write","write_only"):
-                raise ValueError("Цей розділ тільки для читання.")
-            if action=="q":
-                if old==mode:
-                    await access_profile_view(target,chat,mid)
-                    return
-                confirm=f"su:r:{target}:{token}:{code}:{MODE_CODE[old]}"
-                text,markup=preview_view(target,label,[(tab,old,mode)],confirm)
-                await render_access_keyboard(chat,text,markup,mid)
-                return
-            if chunks[5] not in CODE_MODE or old!=CODE_MODE[chunks[5]]:
-                raise ValueError("Доступ уже змінився. Відкрий список та перевір знову.")
-            if old!=mode:
-                await sheet(store.grant,target,tab,mode,uid)
-                await notify_access_changed(target)
-            await access_profile_view(target,chat,mid)
+            panel,changed=await sheet(
+                store.grant_from_button,target,token,CODE_MODE[code],uid)
+            text,markup=user_view(panel["record"],panel["access"],panel["titles"])
+            await render_access_keyboard(chat,text,markup,mid)
+            if changed:
+                log.info("Owner %s updated access of Telegram user %s",uid,target)
             return
-        raise ValueError("Кнопка застаріла. Відкрий /users.")
+        # A legacy two-step confirmation button must never apply an old
+        # state-changing action after the UI has switched to single-tap.
+        raise ValueError("Ця кнопка зі старого меню. Відкрий /users.")
     except ValueError as exc:
         await render_access_keyboard(chat,
-            "Не вдалося змінити доступ: "+str(exc)+"\nСпробуй /users.",
+            "Не вдалося змінити доступ: "+str(exc)+"\nВідкрий /users.",
             access_keyboard([[access_button("⬅️ Користувачі","su:l:0")]]),mid)
 
 
