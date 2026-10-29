@@ -19,6 +19,7 @@ from googleapiclient.discovery import build
 from business import (allowed_status, positive_quantity, stock_balances, stock_key,
                       procurement_from_request, number_text)
 from dialogue import new_dialogue, normalize_dialogue
+from projects import canonical_project, approved_projects
 
 KYIV=ZoneInfo("Europe/Kyiv")
 USERS="_Shuher_Users"
@@ -253,6 +254,38 @@ class SheetsStore:
             raise ValueError("ID не знайдено у «"+table+"»: "+str(record_id))
         return headers,matches[0][0],matches[0][1]
 
+    def update_field(self,table,record_id,field,new_value):
+        """Restricted internal helper for project-approval metadata only.
+
+        Never expose this function as an arbitrary user-edit command.
+        """
+        if table!="Запити на проєкти" or field not in ("Статус","Погодив","Дата рішення"):
+            raise ValueError("Довільне редагування полів не дозволено.")
+        headers,row_num,_=self._lookup(table,record_id)
+        if field not in headers:
+            raise ValueError("Не знайдено поле «"+field+"».")
+        index=headers.index(field)
+        column=""
+        number=index+1
+        while number:
+            number,remainder=divmod(number-1,26)
+            column=chr(65+remainder)+column
+        self.client.values().update(
+            spreadsheetId=self.id,range=quoted(table)+f"!{column}{row_num}",
+            valueInputOption="RAW",body={"values":[[new_value]]}).execute()
+
+    def append_project_request(self,record_id,name,author,reason=""):
+        name=str(name or "").strip()
+        if not name or len(name)>90:
+            raise ValueError("Назва проєкту має містити 1–90 символів.")
+        if canonical_project(self,name):
+            raise ValueError("Проєкт уже є у списку: "+name)
+        return self.append_record("Запити на проєкти",{
+            "Дата":now(),"Назва проєкту":name,
+            "Ініціатор":author,"Обґрунтування":str(reason or "")[:500],
+            "Статус":"Очікує погодження",
+        },record_id,author)
+
     def update_status(self,table,record_id,field,new_value,expected_old):
         """Update a single status cell, never rewrite unrelated columns."""
         field,new_value=allowed_status(table,field,new_value)
@@ -294,6 +327,18 @@ class SheetsStore:
         if not resolved:
             raise ValueError("Таблицю не знайдено.")
         values=dict(values)
+        if resolved in ("Заявки","Рахунки"):
+            label=str(values.get("Проєкт","")).strip()
+            canonical=canonical_project(self,label)
+            if not canonical:
+                choices=", ".join(approved_projects(self))
+                raise ValueError("Проєкт обов’язковий, має бути погоджений власником. "
+                                 "Вибери його з довідника: "+choices)
+            values["Проєкт"]=canonical
+        if resolved=="Рахунки":
+            values["Статус власника"]="Очікує перевірки"
+            values["Потрібна перевірка"]=values.get("Потрібна перевірка") or "Так"
+            return self.append_record(resolved,values,record_id,author),False
         if resolved=="Заявки":
             if not all(values.get(name) and str(values.get(name)).strip().casefold()
                        not in ("null","none","невідомо","-")
