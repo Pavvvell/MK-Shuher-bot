@@ -108,7 +108,7 @@ async def interpret_natural(text, permissions, is_owner, ask_model, history=""):
         return {"intent":"other"}
     system=(
         "Ти маршрутизатор повідомлень для Telegram-помічника Шухер. "
-        "Поверни ТІЛЬКИ JSON: intent (status|balance|today|append|read|other), "
+        "Поверни ТІЛЬКИ JSON: intent (status|balance|today|history|append|read|other), "
         "table, field, value, target. "
         "status — користувач повідомляє про ЗМІНУ статусу вже наявної позиції. "
         "Приклад: 'болти М8×30 вже замовили' -> "
@@ -125,6 +125,14 @@ async def interpret_natural(text, permissions, is_owner, ask_model, history=""):
         "Не оформлюй заявку, поки користувач тільки обирає варіант. "
         "Коли користувач після обговорення прямо каже 'оформляй заявку', "
         "intent=append, table=Заявки. "
+        "history — запит про ПОПЕРЕДНІ заявки, минулі закупівлі, старі накладні, "
+        "доручення, постачальників, збережені в історичному реєстрі. "
+        "Приклади: 'яку трубу раніше купували для STF-02' -> history, "
+        "target='STF-02 труба'; "
+        "'що Юрі доручали раніше' -> history, target='Юра'. "
+        "Це не живий стан; не плутай зі свіжими складськими залишками. "
+        "Для history target містить тільки пошукові ключі: "
+        "проєкт, найменування, артикул, людину або постачальника. "
         "read — прямий запит прочитати поточні дані конкретної доступної таблиці. "
         "balance — запит про складські залишки, target=назва товару або ''. "
         "today — звіт власникові про сьогоднішні закупівлі. "
@@ -156,6 +164,8 @@ async def interpret_natural(text, permissions, is_owner, ask_model, history=""):
         return {"intent":"today"}
     if intent=="balance" and can_balance:
         return {"intent":"balance","target":str(data.get("target") or "").strip()[:160]}
+    if intent=="history":
+        return {"intent":"history","target":str(data.get("target") or "").strip()[:180]}
     table=next((x for x in readable_tables
                 if x.casefold()==str(data.get("table") or "").strip().casefold()),None)
     if not table:
