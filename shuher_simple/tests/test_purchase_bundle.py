@@ -87,6 +87,7 @@ class PurchaseBundleTests(unittest.TestCase):
         raw["groups"][0]["images"]=[1]
         raw["groups"][1]["images"]=[3]
         bundle=validate_package(raw,3)
+        apply_invoice_project(bundle,"Мет обробка")
         with self.assertRaisesRegex(ValueError,"невизначені"):
             validate_persistence(bundle)
 
