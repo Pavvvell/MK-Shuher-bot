@@ -108,13 +108,17 @@ async def interpret_natural(text, permissions, is_owner, ask_model, history=""):
         return {"intent":"other"}
     system=(
         "Ти маршрутизатор повідомлень для Telegram-помічника Шухер. "
-        "Поверни ТІЛЬКИ JSON: intent (status|balance|today|history|append|read|other), "
+        "Поверни ТІЛЬКИ JSON: intent (status|balance|today|history|invoice|append|read|other), "
         "table, field, value, target. "
         "status — користувач повідомляє про ЗМІНУ статусу вже наявної позиції. "
         "Приклад: 'болти М8×30 вже замовили' -> "
         "status, Закупка, Статус замовлення, Замовлено, болти М8×30; "
         "'гайки М12 оплатили' -> status, Закупка, Статус оплати, Оплачено, гайки М12; "
         "'завдання з вентиляції виконали' -> status, Доручення, Статус, Виконано, вентиляції. "
+        "invoice — людина передає рахунок на оплату, фото рахунку, "
+        "PDF рахунку або скрін оплати карткою. table=Рахунки. "
+        "Під час обговорення рахунку без прохання передати — other. "
+        "Після invoice сервер ЗАВЖДИ вимагає проєкт і підтвердження. "
         "append — лише коли користувач справді просить ЗАПИСАТИ нову заявку, "
         "доручення, надходження або видачу: 'треба купити 10 болтів М8' -> append Заявки; "
         "'оформи заявку на вибраний диск' -> append Заявки; "
@@ -172,6 +176,8 @@ async def interpret_natural(text, permissions, is_owner, ask_model, history=""):
         return {"intent":"other"}
     if intent=="read":
         return {"intent":"read","table":table}
+    if intent=="invoice" and table=="Рахунки" and table in writable_tables:
+        return {"intent":"invoice","table":table}
     if intent=="append" and table in writable_tables:
         return {"intent":"append","table":table}
     if intent=="status" and table in writable_status:
