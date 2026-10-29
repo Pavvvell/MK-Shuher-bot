@@ -12,7 +12,7 @@ MAX_RECIPIENTS = 5
 # Common Ukrainian inflections for staff already identified by their own
 # Telegram first names. These are NOT Telegram IDs and cannot grant access.
 KNOWN_ALIASES = {
-    "yuriy": ("юра","юрі","юрій","юрію","юрія","юре","юру",
+    "yuriy": ("юра","юро","юрі","юрій","юрію","юрія","юре","юру",
               "yuriy","yuri","yurii","yura"),
     "sergey": ("сергій","сергію","сергія","сергей","сергею",
                "сергея","сергієм","sergey","serhii","sergii","sergiy"),
@@ -32,8 +32,17 @@ NEGATION_RE = re.compile(
     r"(?:напиши|написати|надішли|надіслати|відправ|повідом|скажи|передай)",
     re.IGNORECASE,
 )
-PRONOUN_RE = re.compile(r"\b(?:їм|обом|кожному|хлопцям|їх|ним)\b",re.IGNORECASE)
+PRONOUN_RE = re.compile(r"\b(?:їм|обом|кожному|хлопцям|їх|ним|йому|його|їй|її)\b",re.IGNORECASE)
 WORD_BODY_RE = re.compile(r"\bщо\b",re.IGNORECASE)
+FOLLOWUP_SEND_RE = re.compile(
+    r"\b(?:напишеш|надішлеш|відправиш|повідомиш|передаси|скинеш)\b",
+    re.IGNORECASE,
+)
+SUGGESTION_RE = re.compile(
+    r"\b(?:можеш|зможеш|будь ласка|давай)\b.{0,170}?"
+    r"\b(?:написати|надіслати|відправити|передати|повідомити)\b",
+    re.IGNORECASE,
+)
 
 
 def _norm(text):
@@ -44,9 +53,15 @@ def is_send_request(text):
     value=str(text or "").strip()
     if len(value)>2500 or NEGATION_RE.search(value):
         return False
-    if re.search(r"\b(?:напиши|надішли|відправ)\s+мені\b",value,re.IGNORECASE):
+    if re.search(r"\b(?:напиши|надішли|відправ|напишеш|надішлеш)\s+мені\b",
+                 value,re.IGNORECASE):
         return False  # Asking for a draft for the owner, not a staff DM.
-    return bool(SEND_RE.match(value))
+    if re.search(r"\b(?:не|ні|не треба|не потрібно)\s+"
+                 r"(?:напишеш|надішлеш|відправиш|повідомиш|передаси|скинеш)\b",
+                 value,re.IGNORECASE):
+        return False
+    return bool(SEND_RE.match(value) or FOLLOWUP_SEND_RE.search(value)
+                or SUGGESTION_RE.search(value))
 
 
 def effective_send_request(text,history):
@@ -201,6 +216,28 @@ def compose_message(request,record):
     return None
 
 
+def proposed_message_from_history(history,record):
+    """Use only the latest explicit draft offered for this very recipient.
+
+    A direct owner's request to send after that response accepts its wording;
+    unrelated assistant messages cannot establish recipients or content.
+    """
+    if not isinstance(history,list) or not history:
+        return None
+    last=history[-1]
+    if not isinstance(last,dict) or last.get("role")!="assistant":
+        return None
+    content=str(last.get("content") or "")
+    forms=_forms(record)
+    forms.add(_norm(_identity(record)))
+    for line in content.splitlines():
+        candidate=line.strip().lstrip("> *-").strip()
+        head,separator,_=candidate.partition(",")
+        if separator and 35<=len(candidate)<=1900 and _norm(head) in forms:
+            return candidate
+    return None
+
+
 def delivery_plan(text,history,users,owner_ids=()):
     """Build one DM per unique Telegram ID or return an actionable error."""
     if not is_send_request(text):
@@ -215,6 +252,8 @@ def delivery_plan(text,history,users,owner_ids=()):
     plan=[]
     for user in recipients:
         message=compose_message(text,user)
+        if not message:
+            message=proposed_message_from_history(history,user)
         if not message:
             raise ValueError("Що саме передати працівникам? Напиши текст після «що».")
         label="@"+str(user[1]) if len(user)>1 and user[1] else str(user[2])
