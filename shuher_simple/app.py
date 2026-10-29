@@ -29,6 +29,7 @@ from projects import (canonical_project, approved_projects, select_project_messa
 from media import (MAX_PHOTO_BYTES, telegram_file_bytes, transcribe_telegram_voice)
 from natural import interpret_natural, status_candidates, status_selection_text
 from outreach import is_send_request, delivery_plan
+from llm import generate
 
 logging.basicConfig(level=logging.INFO)
 log=logging.getLogger("shuher-lite")
@@ -39,7 +40,7 @@ class Settings(BaseSettings):
     telegram_bot_token:str
     telegram_webhook_secret:str
     openai_api_key:str
-    openai_model:str="gpt-4.1-mini"
+    openai_model:str="gpt-6-astra"
     spreadsheet_id:str
     history_spreadsheet_id:str=""
     owner_ids:str
@@ -55,7 +56,7 @@ store=SheetsStore(settings.spreadsheet_id,settings.google_service_account_json_b
 history_store=(SheetsStore(settings.history_spreadsheet_id,
                           settings.google_service_account_json_b64)
                if settings.history_spreadsheet_id else None)
-openai=AsyncOpenAI(api_key=settings.openai_api_key,timeout=35)
+openai=AsyncOpenAI(api_key=settings.openai_api_key,timeout=90,max_retries=1)
 telegram_api=f"https://api.telegram.org/bot{settings.telegram_bot_token}"
 inflight=asyncio.Lock()
 
@@ -97,12 +98,10 @@ async def notify_owners(uid,person):
             log.exception("Cannot notify owner of registration")
 
 async def ask_model(messages,max_tokens=500,json_mode=False):
-    params={"model":settings.openai_model,"messages":messages,
-            "max_tokens":max_tokens,"temperature":0}
-    if json_mode:
-        params["response_format"]={"type":"json_object"}
-    response=await openai.chat.completions.create(**params)
-    return response.choices[0].message.content or ""
+    return await generate(
+        openai,settings.openai_model,messages,
+        max_tokens=max_tokens,json_mode=json_mode,
+    )
 
 def user_label(user):
     return ("@"+user["username"]) if user.get("username") else user.get("first_name","Користувач")
@@ -1352,7 +1351,7 @@ app=FastAPI(lifespan=lifespan)
 
 @app.get("/health")
 async def health():
-    return {"status":"ok","backend":"google-sheets"}
+    return {"status":"ok","backend":"google-sheets","model":settings.openai_model}
 
 @app.post("/telegram/webhook")
 async def webhook(request:Request,
