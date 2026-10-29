@@ -32,6 +32,18 @@ def canonical_project(store,requested):
     return next((s for s in approved_projects(store) if _norm(s)==candidate),None)
 
 
+def explicit_project_in_message(store,text):
+    """Accept project only when named as a project, never by substring guess."""
+    message=str(text or "")
+    for name in sorted(approved_projects(store),key=len,reverse=True):
+        pattern=(r"(?:\bпроєкт(?:у|а|і|ом)?\b|"
+                 r"\bпроект(?:у|а|і|ом)?\b)"
+                 r"\s*[:\-—]?\s*"+re.escape(name)+r"(?=$|[\s,.;!?])")
+        if re.search(pattern,message,re.IGNORECASE):
+            return name
+    return None
+
+
 def select_project_message(store,purpose="запису"):
     names=approved_projects(store)
     return (
