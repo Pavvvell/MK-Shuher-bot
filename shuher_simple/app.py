@@ -825,13 +825,39 @@ async def handle_message(update):
                                     doc_mime if doc_is_image else "image/jpeg")
             await sheet(store.save_dialogue,uid,state)
             if text and not msg.get("media_group_id"):
-                await chat_answer(uid,chat,text)
+                if text_mentions_invoice(text):
+                    await stage_invoice(uid,chat,person,text)
+                else:
+                    await chat_answer(uid,chat,text)
             elif first:
                 await send(chat,"Фото отримав. Можеш надіслати ще (до 6 штук). "
                                 "Потім напиши, що треба з'ясувати, або /analyze.")
             return
         if msg.get("document") and not doc_is_image:
-            await send(chat,"Поки розбираю фото JPEG/PNG/WebP. PDF та інші документи ще не підтримую.")
+            if doc_mime!="application/pdf":
+                await send(chat,"Зараз можу прикріпити PDF рахунку або аналізувати фото. "
+                                "Імпорт XLS/XLSX та інших файлів ще не підключений.")
+                return
+            if not await sheet(permission,uid):
+                await send(chat,"Для роботи з рахунками потрібен доступ від власника.")
+                return
+            if int(image_document.get("file_size") or 0)>20_000_000:
+                await send(chat,"PDF завеликий (максимум 20 МБ).")
+                return
+            if await sheet(store.get_pending,uid):
+                await send(chat,"Спочатку заверши або скасуй незавершений запис.")
+                return
+            state=await sheet(store.get_dialogue,uid)
+            state=queue_document(state,image_document["file_id"],
+                                 image_document.get("file_name") or "рахунок.pdf",
+                                 msg.get("caption") or "")
+            await sheet(store.save_dialogue,uid,state)
+            if text and text_mentions_invoice(text):
+                await stage_invoice(uid,chat,person,text)
+            else:
+                await send(chat,"PDF отримав. Для передачі як рахунку напиши "
+                                "«це рахунок на оплату» й назви проєкт. "
+                                "Вміст PDF поки не розпізнаю автоматично.")
             return
         from_voice=bool(msg.get("voice"))
         if from_voice:
@@ -856,6 +882,45 @@ async def handle_message(update):
                 text.casefold() in ("так","да","yes","підтверджую")):
             await send(chat,"Почув підтвердження, але для запису в таблицю "
                             "напиши «так» текстом. Це захист від помилок розпізнавання.")
+            return
+        if pending and pending["payload"].get("kind")=="project_pick":
+            payload=pending["payload"]
+            if text.casefold() in ("ні","нет","no","скасувати"):
+                await sheet(store.clear_pending,uid)
+                await send(chat,"Скасовано. Нічого не передано.")
+                return
+            new_name=requested_new_project(text)
+            if new_name is not None:
+                await sheet(store.clear_pending,uid)
+                await stage_project_request(uid,chat,person,new_name)
+                await send(chat,"Попередній рахунок/заявка не проведені. "
+                                "Після погодження проєкту повтори оформлення.")
+                return
+            project=await sheet(select_project_answer,store,text)
+            if not project:
+                await send(chat,await sheet(select_project_message,store,
+                          "рахунку" if pending["table"]=="Рахунки" else "заявки"))
+                return
+            values=dict(payload["values"])
+            values["Проєкт"]=project
+            if pending["table"]=="Рахунки":
+                await sheet(store.clear_pending,uid)
+                await finish_invoice_draft(uid,chat,values,payload.get("attachments",{}))
+                return
+            missing=[name for name in ("Найменування","Кількість","Од. вим.")
+                     if not values.get(name)]
+            if missing:
+                await sheet(store.clear_pending,uid)
+                await send(chat,"У заявці не вистачає: "+", ".join(missing)+
+                                ". Уточни ці дані та подай заявку повторно.")
+                return
+            positive_quantity(values["Кількість"])
+            await sheet(store.save_pending,uid,pending["table"],{
+                "record_id":payload["record_id"],"values":values,
+            })
+            await send(chat,"Записати заявку для проєкту «"+project+"»?\n"+
+                           "\n".join(f"{k}: {v}" for k,v in values.items())+
+                           "\nПідтверди «так» або «ні».")
             return
         if pending and pending["payload"].get("kind")=="status_pick":
             payload=pending["payload"]
