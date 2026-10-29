@@ -49,6 +49,32 @@ def is_send_request(text):
     return bool(SEND_RE.match(value))
 
 
+def effective_send_request(text,history):
+    """Honor a precise yes to a previous unsent owner instruction.
+
+    This supports older bot conversations that unnecessarily asked
+    "Чи треба надіслати?". An unrelated yes is never an order.
+    """
+    if is_send_request(text):
+        return str(text).strip()
+    if _norm(text) not in ("так","так, надішли","так надішли","так, відправ","так відправ"):
+        return None
+    if not isinstance(history,list) or len(history)<2:
+        return None
+    last=history[-1]
+    prior=history[-2]
+    if (not isinstance(last,dict) or last.get("role")!="assistant"
+            or not isinstance(prior,dict) or prior.get("role")!="user"):
+        return None
+    reply=_norm(last.get("content"))
+    if ("можу надіслати" not in reply and "можу відправити" not in reply):
+        return None
+    if "чи треба" not in reply and "надсилати?" not in reply:
+        return None
+    previous=str(prior.get("content") or "")
+    return previous if is_send_request(previous) else None
+
+
 def _forms(record):
     username=_norm(record[1]) if len(record)>1 else ""
     first=_norm(record[2]) if len(record)>2 else ""
