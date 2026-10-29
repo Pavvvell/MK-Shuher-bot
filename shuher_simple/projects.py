@@ -44,6 +44,23 @@ def explicit_project_in_message(store,text):
     return None
 
 
+
+def unique_explicit_project(store,text):
+    """Return project only if ONE distinct approved project is explicitly named.
+
+    Multi-document messages may mention different projects. Never silently
+    assign the project of a paid-card purchase to an unrelated invoice.
+    """
+    message=str(text or "")
+    matches=[]
+    for name in approved_projects(store):
+        pattern=(r"(?:\\bпроєкт(?:у|а|і|ом)?\\b|"
+                 r"\\bпроект(?:у|а|і|ом)?\\b)"
+                 r"\\s*[:\\-—]?\\s*"+re.escape(name)+r"(?=$|[\\s,.;!?])")
+        if re.search(pattern,message,re.IGNORECASE):
+            matches.append(name)
+    return matches[0] if len(matches)==1 else None
+
 def select_project_message(store,purpose="запису"):
     names=approved_projects(store)
     return (
