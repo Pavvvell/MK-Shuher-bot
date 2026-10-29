@@ -305,6 +305,17 @@ class SheetsStore:
     def clear_dialogue(self,uid):
         self.save_dialogue(uid,new_dialogue())
 
+    def task_notification_markers(self):
+        """Return markers already acknowledged by Telegram delivery.
+
+        Stored in the existing internal update log, not a newly created sheet.
+        """
+        rows = self.client.values().get(
+            spreadsheetId=self.id, range=quoted(UPDATES)+"!A2:A30000"
+        ).execute().get("values", [])
+        return {str(row[0]) for row in rows
+                if row and str(row[0]).startswith("tasknotify:")}
+
     def processed(self,update_id):
         rows=self.client.values().get(spreadsheetId=self.id,
             range=quoted(UPDATES)+"!A2:A30000").execute().get("values",[])
