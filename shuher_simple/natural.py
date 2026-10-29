@@ -91,6 +91,7 @@ def status_selection_text(candidates):
 
 import json
 from business import STATUSES, allowed_status
+from access_ui import can_read, can_write
 
 
 async def interpret_natural(text, permissions, is_owner, ask_model, history=""):
@@ -101,10 +102,11 @@ async def interpret_natural(text, permissions, is_owner, ask_model, history=""):
     """
     writable_status={table:fields for table,fields in STATUSES.items()
                      if permissions.get(table)=="write"}
-    writable_tables=[table for table,mode in permissions.items() if mode=="write"]
-    readable_tables=list(permissions)
-    can_balance="Склад" in permissions
-    if not (readable_tables or is_owner):
+    writable_tables=[table for table,mode in permissions.items() if can_write(mode)]
+    readable_tables=[table for table,mode in permissions.items() if can_read(mode)]
+    available_tables=list(permissions)
+    can_balance=can_read(permissions.get("Склад"))
+    if not (available_tables or is_owner):
         return {"intent":"other"}
     system=(
         "Ти маршрутизатор повідомлень для Telegram-помічника Шухер. "
@@ -170,11 +172,11 @@ async def interpret_natural(text, permissions, is_owner, ask_model, history=""):
         return {"intent":"balance","target":str(data.get("target") or "").strip()[:160]}
     if intent=="history":
         return {"intent":"history","target":str(data.get("target") or "").strip()[:180]}
-    table=next((x for x in readable_tables
+    table=next((x for x in available_tables
                 if x.casefold()==str(data.get("table") or "").strip().casefold()),None)
     if not table:
         return {"intent":"other"}
-    if intent=="read":
+    if intent=="read" and table in readable_tables:
         return {"intent":"read","table":table}
     if intent=="invoice" and table=="Рахунки" and table in writable_tables:
         return {"intent":"invoice","table":table}
