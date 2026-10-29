@@ -56,6 +56,11 @@ class IntegrationRules(unittest.TestCase):
         obj = SheetsStore.__new__(SheetsStore)
         obj.id = "TEST_SPREADSHEET_ID"
         obj.resolve = lambda title: title
+        original_read = getattr(obj,"read_table",None)
+        obj.read_table = lambda tab: (
+            (["ID","Назва проєкту"],[["PR-002","STF"]])
+            if tab=="Проєкти" else ([],[])
+        )
         return obj
 
     def test_request_creates_linked_procurement_once(self):
