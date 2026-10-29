@@ -421,7 +421,9 @@ def text_mentions_invoice(text):
 
 
 def wants_purchase_bundle(text):
-    words=str(text or "").casefold()
+    words=str(text or "").casefold().strip()
+    if words in ("все","готово","розбирай","це все","ці всі","все скинув"):
+        return True
     return any(term in words for term in (
         "рахун","оплат","картк","чек","покупк","видатков",
         "документ","розбери","розділи","розподіли",
@@ -674,6 +676,11 @@ async def stage_invoice(uid,chat,person,text):
         return
     state=await sheet(store.get_dialogue,uid)
     attachments={"photos":state["photos"],"documents":state["documents"]}
+    if attachments["photos"]:
+        # A finance image must go through per-photo grouping; legacy
+        # stage_invoice used to silently join all photos into one bill.
+        await stage_purchase_bundle(uid,chat,person,text,state)
+        return
     if not attachments["photos"] and not attachments["documents"] and len(text)<18:
         await send(chat,"Надішли фото або PDF рахунку та зазнач проєкт.")
         return
@@ -1344,11 +1351,19 @@ async def handle_message(update):
         doc_mime=str(image_document.get("mime_type") or "")
         doc_is_image=doc_mime in ("image/jpeg","image/png","image/webp")
         if msg.get("photo") or doc_is_image:
-            if not await sheet(permission,uid):
+            access=await sheet(permission,uid)
+            if not access:
                 await send(chat,"Щоб обговорювати фото, власник має надати тобі доступ. /start")
                 return
-            if await sheet(store.get_pending,uid):
-                await send(chat,"Спочатку підтвердь або скасуй незавершений запис: так / ні.")
+            purchaser=uid not in owners and can_write(access.get("Рахунки"))
+            previous=await sheet(store.get_pending,uid)
+            if previous and purchaser and previous["payload"].get("kind") in (
+                    "purchase_bundle","invoice","project_pick"):
+                # New finance photos start/restart an image package. No
+                # write has taken place from the old pending draft.
+                await sheet(store.clear_pending,uid)
+            elif previous:
+                await send(chat,"Є незавершений запис. Для його скасування напиши «ні».")
                 return
             image=(msg["photo"][-1] if msg.get("photo") else image_document)
             if int(image.get("file_size") or 0)>MAX_PHOTO_BYTES:
@@ -1359,6 +1374,13 @@ async def handle_message(update):
                                     msg.get("caption") or "",
                                     doc_mime if doc_is_image else "image/jpeg")
             await sheet(store.save_dialogue,uid,state)
+            if purchaser:
+                if first:
+                    await send(chat,"Фото отримав. Надішли всі фото документа/покупки, "
+                                    "а тоді одним повідомленням напиши, що до чого "
+                                    "(наприклад: «1 — оплата карткою, 2 — товар, "
+                                    "3 — окремий рахунок»), або «розбери фото».")
+                return
             if text and not msg.get("media_group_id"):
                 if is_receipt_pdf_request(text):
                     await stage_receipt_pdf(uid,chat,text)
@@ -1423,6 +1445,62 @@ async def handle_message(update):
                 text.casefold() in ("так","да","yes","підтверджую")):
             await send(chat,"Почув підтвердження, але для запису в таблицю "
                             "напиши «так» текстом. Це захист від помилок розпізнавання.")
+            return
+        if pending and pending["payload"].get("kind")=="purchase_bundle":
+            payload=pending["payload"]
+            answer=text.casefold().strip()
+            if answer in ("ні","нет","no","скасувати","стоп"):
+                await sheet(store.clear_pending,uid)
+                state=await sheet(store.get_dialogue,uid)
+                await sheet(store.save_dialogue,uid,clear_attachments(state))
+                await send(chat,"Пакет документів скасовано. Нічого не записано.")
+                return
+            if answer in ("так","да","yes","підтверджую"):
+                if from_voice:
+                    await send(chat,"Для фінансових документів підтверди «так» текстом.")
+                    return
+                await commit_purchase_bundle(uid,chat,person,payload)
+                return
+            package=payload["package"]
+            if missing_invoice_project(package):
+                project=(await sheet(select_project_answer,store,text) or
+                         await sheet(explicit_project_in_message,store,text))
+                if project:
+                    apply_invoice_project(package,project)
+                    await sheet(store.save_pending,uid,"Рахунки",payload)
+                    await send(chat,grouped_preview(package)+
+                               "\n\nТепер «так» — записати окремі операції "
+                               "й передати власнику підсумок. "
+                               "Якщо я переплутав фото, напиши виправлення.")
+                    return
+            # Free-text clarification re-analyzes the SAME original photos;
+            # it must not be misread as a new purchase or a yes/no response.
+            state=await sheet(store.get_dialogue,uid)
+            if not state.get("photos"):
+                state["photos"]=payload["photos"]
+            await stage_purchase_bundle(uid,chat,person,text,state)
+            return
+        if (pending and uid in owners and
+                pending["table"]=="Рахунки" and
+                pending["payload"].get("kind") in ("invoice","project_pick") and
+                len(text)>20 and
+                any(word in text.casefold() for word in
+                    ("перш","друг","трет","не стосує","окрем","помилк"))):
+            # Owner's corrections cannot be blocked behind a stale invoice
+            # draft. Cancel the *pending* operation, not existing records.
+            await sheet(store.clear_pending,uid)
+            state=await sheet(store.get_dialogue,uid)
+            msg_text=(
+                "Зрозумів виправлення: фото не можна зводити в один рахунок. "
+                "Окрема оплата карткою та товар до неї — одна покупка; "
+                "інший рахунок — окремий документ. "
+                "Незавершену чернетку скасував. "
+                "Раніше записані рядки в таблиці не змінював. "
+                "Спочатку маю розібрати документи з Юрієм, "
+                "а тобі надіслати структурований результат."
+            )
+            await sheet(store.save_dialogue,uid,remember_exchange(state,text,msg_text))
+            await send(chat,msg_text)
             return
         if pending and pending["payload"].get("kind")=="receipt_pdf_pick":
             if text.casefold() in ("ні","нет","no","скасувати"):
@@ -1590,6 +1668,11 @@ async def handle_message(update):
         # Photos are always discussed first, never silently submitted
         # as a purchase request just because a caption says "купити".
         if state["photos"] or state["documents"]:
+            access=await sheet(permission,uid)
+            if (uid not in owners and can_write(access.get("Рахунки")) and
+                    state["photos"] and wants_purchase_bundle(text)):
+                await stage_purchase_bundle(uid,chat,person,text,state)
+                return
             if is_receipt_pdf_request(text):
                 await stage_receipt_pdf(uid,chat,text)
             elif text_mentions_invoice(text):
