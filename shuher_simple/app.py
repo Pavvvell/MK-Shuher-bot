@@ -472,6 +472,8 @@ async def stage_purchase_bundle(uid,chat,person,text,state=None):
         "invoice — фото окремого рахунку. "
         "goods_photo може бути доповненням до card_purchase, "
         "але ніколи не invoice. "
+        "amount — лише число у форматі 26.82 без валюти/тексту; "
+        "currency — окремим полем. "
         "Якщо не впевнений у типі, познач other. "
         "Текст працівника (джерело для групування): "
         +str(text or "")[:1800]+
@@ -635,6 +637,10 @@ async def commit_purchase_bundle(uid,chat,person,payload):
 
 async def finish_invoice_draft(uid,chat,values,attachments):
     """Project must be approved before invoice can reach owner."""
+    if len(attachments.get("photos",[]))>1:
+        raise ValueError("Кілька фото не можна автоматично вважати одним рахунком. "
+                         "Спершу розділи оплачені покупки та рахунки; "
+                         "скасуй стару чернетку й надішли фото Юрію для звірки.")
     cleaned=dict(values)
     resolved=await sheet(canonical_project,store,cleaned.get("Проєкт"))
     if not resolved:
@@ -1359,8 +1365,11 @@ async def handle_message(update):
             previous=await sheet(store.get_pending,uid)
             if previous and purchaser and previous["payload"].get("kind") in (
                     "purchase_bundle","invoice","project_pick"):
-                # New finance photos start/restart an image package. No
-                # write has taken place from the old pending draft.
+                # New photo during a bundle extends that package; but legacy
+                # unconfirmed invoice drafts must not contaminate the new set.
+                if previous["payload"].get("kind")!="purchase_bundle":
+                    old_state=await sheet(store.get_dialogue,uid)
+                    await sheet(store.save_dialogue,uid,clear_attachments(old_state))
                 await sheet(store.clear_pending,uid)
             elif previous:
                 await send(chat,"Є незавершений запис. Для його скасування напиши «ні».")
