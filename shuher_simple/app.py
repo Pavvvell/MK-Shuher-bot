@@ -28,7 +28,7 @@ from access_ui import (button as access_button, keyboard as access_keyboard,
                        can_read, can_write)
 from projects import (canonical_project, approved_projects, select_project_message,
                       select_project_answer, requested_new_project, approve_new_project,
-                      explicit_project_in_message)
+                      explicit_project_in_message, unique_explicit_project)
 from media import (MAX_PHOTO_BYTES, telegram_file_bytes, transcribe_telegram_voice)
 from natural import interpret_natural, status_candidates, status_selection_text
 from outreach import is_send_request, delivery_plan, choose_recipients, MAX_RECIPIENTS
@@ -506,7 +506,7 @@ async def stage_purchase_bundle(uid,chat,person,text,state=None):
         return
     invoices=[g for g in package["groups"] if g["type"]=="invoice"]
     if len(invoices)==1:
-        project=await sheet(explicit_project_in_message,store,text)
+        project=await sheet(unique_explicit_project,store,text)
         if project:
             invoices[0]["project"]=project
     rid="PB-"+datetime.now(KYIV).strftime("%Y%m%d%H%M")+"-"+secrets.token_hex(3).upper()
