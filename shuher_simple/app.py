@@ -1320,6 +1320,14 @@ async def handle_message(update):
                 await send(chat,"PDF прикріплено. Щоб передати рахунок власнику, "
                                 "напиши «це рахунок на оплату» та вкажи проєкт.")
             return
+        if uid in owners and re.fullmatch(
+            r"(?:покажи|відкрий|налаштуй|керуй)?\\s*"
+            r"(?:користувачів|список користувачів|працівників|список працівників|"
+            r"права доступу|доступи|керування доступами|ролі|ролі працівників)",
+            text.casefold().strip(),
+        ):
+            await show_owner_users(chat)
+            return
         if await handle_natural(uid,chat,person,text):
             return
         # Default: no slash commands, no table selection, ordinary GPT chat.
