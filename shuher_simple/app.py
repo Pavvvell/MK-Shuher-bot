@@ -932,7 +932,7 @@ async def stage_owner_task_order(uid,chat,person,text):
         return False
     lowered = text.casefold()
     explicit_task = bool(re.search(
-        r"\\b(?:доручи|доручити|постав.{0,15}завдання|запиши.{0,20}доручення)\\b",
+        r"\b(?:доручи|доручити|постав.{0,15}завдання|запиши.{0,20}доручення)\b",
         lowered))
     future_action = bool(re.search(
         r"(?:напиши|написав|повідом|передай).{0,95}(?:щоб|коли|після)|"
@@ -978,8 +978,8 @@ async def stage_owner_task_order(uid,chat,person,text):
     record_id="SH-"+datetime.now(KYIV).strftime("%Y%m%d%H%M")+"-"+secrets.token_hex(3).upper()
     await sheet(store.save_pending,uid,"Доручення",{"record_id":record_id,"values":values})
     await send(chat, "Підготував доручення для "+assignee+":\\n"+task+
-               "\\nПроєкт: "+(values["Проєкт"] or "не зазначено")+
-               "\\n\\nЗаписати в «Доручення» й повідомити виконавця? "
+               "\nПроєкт: "+(values["Проєкт"] or "не зазначено")+
+               "\n\nЗаписати в «Доручення» й повідомити виконавця? "
                "Підтверди текстом «так» або «ні».")
     return True
 
