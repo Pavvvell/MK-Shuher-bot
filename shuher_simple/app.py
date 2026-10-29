@@ -1031,8 +1031,14 @@ async def handle_message(update):
         state=await sheet(store.get_dialogue,uid)
         # Photos are always discussed first, never silently submitted
         # as a purchase request just because a caption says "купити".
-        if state["photos"]:
-            await chat_answer(uid,chat,text)
+        if state["photos"] or state["documents"]:
+            if text_mentions_invoice(text):
+                await stage_invoice(uid,chat,person,text)
+            elif state["photos"]:
+                await chat_answer(uid,chat,text)
+            else:
+                await send(chat,"PDF прикріплено. Щоб передати рахунок власнику, "
+                                "напиши «це рахунок на оплату» та вкажи проєкт.")
             return
         if await handle_natural(uid,chat,person,text):
             return
