@@ -441,8 +441,19 @@ class SheetsStore:
                                  "Вибери його з довідника: "+choices)
             values["Проєкт"]=canonical
         if resolved=="Рахунки":
+            # An invoice is an UNPAID document pending owner review. Card
+            # confirmations belong in a separate purchase ledger.
+            if str(values.get("Тип документа","")).casefold().startswith("підтвердження оплати"):
+                raise ValueError("Оплату карткою зберігай у «Покупки карткою», а не як рахунок.")
             values["Статус власника"]="Очікує перевірки"
             values["Потрібна перевірка"]=values.get("Потрібна перевірка") or "Так"
+            return self.append_record(resolved,values,record_id,author),False
+        if resolved=="Покупки карткою":
+            if not str(values.get("Фото оплати") or "").strip():
+                raise ValueError("Для покупки карткою потрібне фото підтвердження оплати.")
+            positive_quantity(values.get("Сума"))
+            values["Спосіб оплати"]="Картка"
+            values["Статус звірки"]="За підтвердженням оплати"
             return self.append_record(resolved,values,record_id,author),False
         if resolved=="Заявки":
             if not all(values.get(name) and str(values.get(name)).strip().casefold()
