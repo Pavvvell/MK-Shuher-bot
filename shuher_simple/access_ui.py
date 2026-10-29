@@ -14,7 +14,7 @@ MODE_LABEL={
     "read":"Читання","write_only":"Запис","write":"Читання + запис",
     "none":"Без доступу",
 }
-MODE_SHORT={"read":"Чит.","write_only":"Зап.","write":"Ч+З","none":"✕"}
+MODE_SHORT={"read":"Читання","write_only":"Запис","write":"Ч+З","none":"✕"}
 
 
 def can_read(mode):
@@ -77,11 +77,9 @@ def user_view(record,access,titles):
     """One row per live table: revoke/name, read, write-only and read+write."""
     uid=str(record[0])
     rows=[]
-    lines=[]
-    for index,title in enumerate(titles,1):
+    for title in titles:
         current=access.get(title,"none")
         token=token_for(title)
-        lines.append(f"{index}. {title} — {MODE_LABEL.get(current,'Без доступу')}")
         first=("✕ " if current!="none" else "— ")+_short_title(title)
         row=[button(first,f"su:q:{uid}:{token}:n")]
         for mode in ("read","write_only","write"):
