@@ -17,6 +17,11 @@ GROUP_IMAGE_REQUIRED={"card_purchase":"card_payment","invoice":"invoice"}
 
 def money_amount(value):
     raw=str(value or "").strip().replace("\u00a0","").replace(" ","").replace(",",".")
+    for currency in ("грн.","грн","₴","uah","UAH"):
+        if raw.endswith(currency):
+            raw=raw[:-len(currency)].strip()
+        if raw.startswith(currency):
+            raw=raw[len(currency):].strip()
     if not raw:
         return ""
     try:
