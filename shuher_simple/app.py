@@ -527,6 +527,9 @@ async def handle_natural(uid,chat,person,text):
     if intent=="history":
         await historical_answer(uid,chat,action["target"])
         return True
+    if intent=="invoice":
+        await stage_invoice(uid,chat,person,text)
+        return True
     if intent=="read":
         await send(chat,await read_answer(uid,action["table"],text))
         return True
