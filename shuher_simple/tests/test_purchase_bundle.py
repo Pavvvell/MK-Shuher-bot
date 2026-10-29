@@ -108,6 +108,18 @@ class PurchaseBundleTests(unittest.TestCase):
         pkg=validate_package(raw,3)
         self.assertEqual(pkg["groups"][0]["amount"],"26.82")
 
+    def test_confirmation_survives_google_sheets_json_serialization(self):
+        import json
+        package=validate_package(sample(),3)
+        apply_invoice_project(package,"Мет обробка")
+        stored=json.loads(json.dumps(package,ensure_ascii=False))
+        self.assertEqual(stored["images"]["1"],"card_payment")
+        self.assertEqual(stored["images"]["2"],"goods_photo")
+        self.assertEqual(stored["images"]["3"],"invoice")
+        self.assertTrue(validate_persistence(stored))
+        self.assertEqual(stored["groups"][0]["images"],[1,2])
+        self.assertEqual(stored["groups"][1]["images"],[3])
+
     def test_two_independent_invoices_need_separate_projects(self):
         raw={
             "images":[{"index":1,"type":"invoice"},
