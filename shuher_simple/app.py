@@ -18,6 +18,7 @@ from store import SheetsStore
 from business import today_procurement, positive_quantity
 from company import build_company_context
 from knowledge import search_history, render_owner_rules
+from receipt_pdf import photos_to_pdf
 from dialogue import queue_photo, queue_document, clear_attachments, remember_exchange, history_excerpt
 from projects import (canonical_project, approved_projects, select_project_message,
                       select_project_answer, requested_new_project, approve_new_project,
@@ -456,6 +457,49 @@ async def stage_invoice(uid,chat,person,text):
     await finish_invoice_draft(uid,chat,values,attachments)
 
 
+def is_receipt_pdf_request(text):
+    lower=str(text or "").casefold()
+    return (("pdf" in lower or "пдф" in lower) and
+            ("накладн" in lower or "фото" in lower) and
+            any(word in lower for word in
+                ("збери","зроби","об'єднай","обєднай","сформуй","підготуй","згенеруй")))
+
+
+async def stage_receipt_pdf(uid,chat,project_hint):
+    rights=await sheet(permission,uid)
+    if uid not in owners and "Склад" not in rights and "Накладні" not in rights:
+        await send(chat,"Для формування PDF накладних потрібен доступ до «Склад» "
+                        "або «Накладні».")
+        return
+    state=await sheet(store.get_dialogue,uid)
+    if not state["photos"]:
+        await send(chat,"Надішли фото видаткових накладних (до 6 штук), "
+                        "потім напиши «збери PDF накладних, проєкт STF».")
+        return
+    explicit=(await sheet(canonical_project,store,project_hint) or
+              await sheet(explicit_project_in_message,store,project_hint))
+    if not explicit:
+        await sheet(store.save_pending,uid,"Накладні",{"kind":"receipt_pdf_pick"})
+        await send(chat,await sheet(select_project_message,store,"PDF накладних"))
+        return
+    images=[]
+    for item in state["photos"]:
+        raw=await telegram_file_bytes(bot_call,settings.telegram_bot_token,
+                                      item["file_id"],MAX_PHOTO_BYTES)
+        images.append(raw)
+    pdf=await asyncio.to_thread(photos_to_pdf,images)
+    filename="nakladni_"+re.sub(r"[^\w-]+","_",explicit)[:45]+".pdf"
+    await bot_call("sendDocument",{
+        "chat_id":chat,
+        "caption":"Видаткові накладні · проєкт "+explicit+
+                  "\nЗібрано з "+str(len(images))+
+                  " фото. PDF не підтверджує фактичне надходження товару.",
+    },{"document":(filename,pdf,"application/pdf")})
+    state["photos"]=[]
+    state["notes"]=""
+    await sheet(store.save_dialogue,uid,state)
+
+
 async def notify_owner_invoice(uid,record_id,values,attachments):
     message=("Шухер: отримано документ для перевірки власником.\n"
         "ID: "+record_id+"\n"
@@ -506,6 +550,9 @@ async def handle_natural(uid,chat,person,text):
         r"(?:новий\s+)?проєкт\s+(.+)$",text,re.IGNORECASE)
     if project_match:
         await stage_project_request(uid,chat,person,project_match.group(1))
+        return True
+    if is_receipt_pdf_request(text):
+        await stage_receipt_pdf(uid,chat,text)
         return True
     if text_mentions_invoice(text):
         await stage_invoice(uid,chat,person,text)
@@ -588,7 +635,7 @@ async def handle_command(uid,chat,person,text):
                "Будь-який запис — тільки після твого «так» текстом.\n\n"
                "Корисні команди за бажанням: /new — почати нову розмову; "
                "/analyze — розібрати надіслані фото; /history — пошук у старих записах; /cancel — скасувати чернетку; "
-               "/tables — розділи; /projects — проєкти; /projectrequest — новий проєкт; /invoice — рахунок; /id — твій ID; "
+               "/tables — розділи; /projects — проєкти; /projectrequest — новий проєкт; /invoice — рахунок; /receiptpdf — фото в PDF; /id — твій ID; "
                "/use Назва — вибрати таблицю для /add або /ask; "
                "/export — скачати таблицю.")
         if owner:
@@ -681,6 +728,9 @@ async def handle_command(uid,chat,person,text):
         await send(chat,("ПОГОДИТИ" if action=="project_approve" else "ВІДХИЛИТИ")+
                    " новий проєкт «"+str(fields.get("Назва проєкту"))+
                    "»?\nПідтверди «так» або «ні».")
+        return
+    if cmd=="/receiptpdf":
+        await stage_receipt_pdf(uid,chat,arg)
         return
     if cmd=="/invoice":
         await stage_invoice(uid,chat,person,arg or "Рахунок на оплату")
@@ -828,7 +878,9 @@ async def handle_message(update):
                                     doc_mime if doc_is_image else "image/jpeg")
             await sheet(store.save_dialogue,uid,state)
             if text and not msg.get("media_group_id"):
-                if text_mentions_invoice(text):
+                if is_receipt_pdf_request(text):
+                    await stage_receipt_pdf(uid,chat,text)
+                elif text_mentions_invoice(text):
                     await stage_invoice(uid,chat,person,text)
                 else:
                     await chat_answer(uid,chat,text)
@@ -885,6 +937,18 @@ async def handle_message(update):
                 text.casefold() in ("так","да","yes","підтверджую")):
             await send(chat,"Почув підтвердження, але для запису в таблицю "
                             "напиши «так» текстом. Це захист від помилок розпізнавання.")
+            return
+        if pending and pending["payload"].get("kind")=="receipt_pdf_pick":
+            if text.casefold() in ("ні","нет","no","скасувати"):
+                await sheet(store.clear_pending,uid)
+                await send(chat,"Скасовано.")
+                return
+            project=await sheet(select_project_answer,store,text)
+            if not project:
+                await send(chat,await sheet(select_project_message,store,"PDF накладних"))
+                return
+            await sheet(store.clear_pending,uid)
+            await stage_receipt_pdf(uid,chat,project)
             return
         if pending and pending["payload"].get("kind")=="project_pick":
             payload=pending["payload"]
@@ -1035,7 +1099,9 @@ async def handle_message(update):
         # Photos are always discussed first, never silently submitted
         # as a purchase request just because a caption says "купити".
         if state["photos"] or state["documents"]:
-            if text_mentions_invoice(text):
+            if is_receipt_pdf_request(text):
+                await stage_receipt_pdf(uid,chat,text)
+            elif text_mentions_invoice(text):
                 await stage_invoice(uid,chat,person,text)
             elif state["photos"]:
                 await chat_answer(uid,chat,text)
