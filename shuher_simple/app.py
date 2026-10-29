@@ -20,10 +20,10 @@ from company import build_company_context
 from knowledge import search_history, render_owner_rules
 from receipt_pdf import photos_to_pdf
 from dialogue import queue_photo, queue_document, clear_attachments, remember_exchange, history_excerpt
-from access_ui import (button as access_button, keyboard as access_keyboard, list_view,
-                       user_view, manual_view, modes_view, preview_view,
-                       managed_changes, PRESETS, MANAGED_TABS, READ_ONLY_TABS,
-                       MODE_LABEL)
+from access_ui import (button as access_button, keyboard as access_keyboard,
+                       list_view, user_view, preview_view, title_for,
+                       CODE_MODE, MODE_CODE, MODE_LABEL, READ_ONLY_TABS,
+                       can_read, can_write)
 from projects import (canonical_project, approved_projects, select_project_message,
                       select_project_answer, requested_new_project, approve_new_project,
                       explicit_project_in_message)
@@ -279,7 +279,7 @@ async def chat_answer(uid,chat,text):
 async def stage_append(uid,chat,person,table,text):
     """Build a draft from current text and prior discussion; never write yet."""
     resolved,mode=await sheet(choose,uid,table)
-    if mode!="write":
+    if not can_write(mode):
         raise ValueError("Для додавання потрібен дозвіл на запис у «"+resolved+"».")
     if resolved=="Рахунки":
         await stage_invoice(uid,chat,person,text)
@@ -450,7 +450,7 @@ async def finish_invoice_draft(uid,chat,values,attachments):
 
 async def stage_invoice(uid,chat,person,text):
     access=await sheet(permission,uid)
-    if access.get("Рахунки")!="write" and uid not in owners:
+    if not can_write(access.get("Рахунки")) and uid not in owners:
         await send(chat,"Для передачі рахунків власник має надати тобі право запису у «Рахунки».")
         return
     state=await sheet(store.get_dialogue,uid)
@@ -699,7 +699,8 @@ async def access_profile_view(uid,chat,edit_id=None):
             access_keyboard([[access_button("⬅️ До списку","su:l:0")]]),edit_id)
         return
     access=await sheet(store.permissions,uid,owners)
-    text,markup=user_view(record,access)
+    tabs=await sheet(store.tables)
+    text,markup=user_view(record,access,tabs)
     await render_access_keyboard(chat,text,markup,edit_id)
 
 
@@ -754,67 +755,34 @@ async def handle_access_callback(callback):
             raise ValueError("Права власника змінювати не можна.")
         access=await sheet(store.permissions,target,owners)
         label=("@"+record[1]) if record[1] else (record[2] or str(target))
-        if action in ("p","c") and len(chunks)==4:
-            key=chunks[3]
-            tabs=await sheet(store.tables)
-            name,changes=managed_changes(access,tabs,key)
-            if action=="p":
-                text,markup=preview_view(target,label+" · "+name,changes,
-                                         f"su:c:{target}:{key}")
-                text+="\n\nЦей набір замінить права на 7 основних розділів. "
-                text+="Інші майбутні модулі не зачепить."
-                await render_access_keyboard(chat,text,markup,mid)
-                return
-            changed=await sheet(store.apply_access_profile,target,key,uid)
-            if changed:
-                await notify_access_changed(target)
+        if action=="d" and len(chunks)==3:
             await access_profile_view(target,chat,mid)
             return
-        if action=="z" and len(chunks)==3:
-            changes=[(tab,mode,"none") for tab,mode in access.items()
-                     if mode in ("read","write")]
-            text,markup=preview_view(target,label+" · забрати ВСІ права",
-                                      changes,f"su:w:{target}")
-            text+="\n\nЦе відкличе доступ до ВСІХ таблиць, у тому числі до нових модулів."
-            await render_access_keyboard(chat,text,markup,mid)
-            return
-        if action=="w" and len(chunks)==3:
-            changed=await sheet(store.revoke_all_access,target,uid)
-            if changed:
-                await notify_access_changed(target)
-            await access_profile_view(target,chat,mid)
-            return
-        if action=="m" and len(chunks)==4:
-            page=int(chunks[3])
+        if action in ("q","r"):
+            if (action=="q" and len(chunks)!=5) or (action=="r" and len(chunks)!=6):
+                raise ValueError("Кнопка застаріла.")
+            token,code=chunks[3:5]
+            if code not in CODE_MODE:
+                raise ValueError("Некоректний режим доступу.")
             tabs=await sheet(store.tables)
-            text,markup=manual_view(target,tabs,access,page)
-            await render_access_keyboard(chat,text,markup,mid)
-            return
-        if action=="t" and len(chunks)==5:
-            index,page=int(chunks[3]),int(chunks[4])
-            tabs=await sheet(store.tables)
-            if not 0<=index<len(tabs):
-                raise ValueError("Таблиця не знайдена.")
-            tab=tabs[index]
-            text,markup=modes_view(target,tab,index,page,access.get(tab,"none"))
-            await render_access_keyboard(chat,text,markup,mid)
-            return
-        if action in ("x","y") and len(chunks)==6:
-            index,mode,page=int(chunks[3]),chunks[4],int(chunks[5])
-            tabs=await sheet(store.tables)
-            if not 0<=index<len(tabs) or mode not in ("read","write","none"):
-                raise ValueError("Некоректний вибір доступу.")
-            tab=tabs[index]
-            if tab in READ_ONLY_TABS and mode=="write":
-                raise ValueError("Цей розділ працівникам доступний тільки для читання.")
-            if action=="x":
-                text,markup=preview_view(
-                    target,label,[(tab,access.get(tab,"none"),mode)],
-                    f"su:y:{target}:{index}:{mode}:{page}")
+            tab=title_for(tabs,token)
+            mode=CODE_MODE[code]
+            old=access.get(tab,"none")
+            if tab in READ_ONLY_TABS and mode in ("write","write_only"):
+                raise ValueError("Цей розділ тільки для читання.")
+            if action=="q":
+                if old==mode:
+                    await access_profile_view(target,chat,mid)
+                    return
+                confirm=f"su:r:{target}:{token}:{code}:{MODE_CODE[old]}"
+                text,markup=preview_view(target,label,[(tab,old,mode)],confirm)
                 await render_access_keyboard(chat,text,markup,mid)
                 return
-            await sheet(store.grant,target,tab,mode,uid)
-            await notify_access_changed(target)
+            if chunks[5] not in CODE_MODE or old!=CODE_MODE[chunks[5]]:
+                raise ValueError("Доступ уже змінився. Відкрий список та перевір знову.")
+            if old!=mode:
+                await sheet(store.grant,target,tab,mode,uid)
+                await notify_access_changed(target)
             await access_profile_view(target,chat,mid)
             return
         raise ValueError("Кнопка застаріла. Відкрий /users.")
@@ -856,7 +824,7 @@ async def handle_command(uid,chat,person,text):
                     "/today — сьогоднішні заявки у закупівлю\n"
                     "/create Назва | Колонка1, Колонка2 — створити вкладку\n"
                     "/grant ID read Назва — лише перегляд\n"
-                    "/grant ID write Назва — перегляд і додавання\n"
+                    "/grant ID write Назва — читання і запис (write_only — лише запис)\n"
                     "/revoke ID Назва — забрати доступ")
         await send(chat,intro)
         return
@@ -874,7 +842,7 @@ async def handle_command(uid,chat,person,text):
         if not accessible:
             await send(chat,"Поки немає доступних таблиць.")
             return
-        rows=[name+" ("+("запис" if mode=="write" else "читання")+")"
+        rows=[name+" ("+MODE_LABEL.get(mode,"невідомо")+")"
               for name,mode in accessible.items()]
         message="Доступні таблиці:\n"+"\n".join(rows)
         if owner:
@@ -961,15 +929,15 @@ async def handle_command(uid,chat,person,text):
         return
     if cmd=="/balance":
         accessible=await sheet(permission,uid)
-        if "Склад" not in accessible:
-            await send(chat,"Немає доступу до складських залишків.")
+        if not can_read(accessible.get("Склад")):
+            await send(chat,"Немає права перегляду складських залишків.")
             return
         await send(chat,await sheet(store.balances,arg))
         return
     if cmd=="/status":
         table,mode=await sheet(choose,uid,"")
-        if mode!="write":
-            await send(chat,"Для зміни статусу потрібен доступ на запис до вибраної таблиці.")
+        if not (can_write(mode) and can_read(mode)):
+            await send(chat,"Для зміни статусу потрібен доступ на читання та запис.")
             return
         parts=[x.strip() for x in arg.split("|")]
         if len(parts)==2:
@@ -997,7 +965,9 @@ async def handle_command(uid,chat,person,text):
                         "Відповідай «так» або «ні». Чернетка діє 30 хв.")
         return
     if cmd=="/export":
-        table,_=await sheet(choose,uid,arg)
+        table,mode=await sheet(choose,uid,arg)
+        if not can_read(mode):
+            raise ValueError("Для експорту потрібен дозвіл на читання.")
         csv_bytes=await sheet(store.csv_data,table)
         filename=re.sub(r"[^\w.-]+","_",table)[:55]+".csv"
         if len(csv_bytes)>15_000_000:
@@ -1022,10 +992,10 @@ async def handle_command(uid,chat,person,text):
                             "\nТепер /grant ID write "+title.strip())
             return
         if cmd=="/grant":
-            match=re.fullmatch(r"(\d+)\s+(read|write)\s+(.+)",arg,re.IGNORECASE)
+            match=re.fullmatch(r"(\d+)\s+(read|write_only|write)\s+(.+)",arg,re.IGNORECASE)
             if not match:
-                await send(chat,"Формат: /grant 123456789 read Назва\n"
-                                "або /grant 123456789 write Назва")
+                await send(chat,"Формат: /grant ID read|write_only|write Назва\n"
+                                "write_only — лише запис; write — читання і запис.")
                 return
             target=int(match.group(1));mode=match.group(2).lower();table=match.group(3)
             if target in owners:
@@ -1254,8 +1224,9 @@ async def handle_message(update):
                     await send(chat,"Запит на новий проєкт відхилено.")
                 return
             table,mode=await sheet(choose,uid,pending["table"])
-            if mode!="write":
-                await send(chat,"Право запису вже відкликано. /cancel")
+            if (not can_write(mode) or
+                    (payload.get("kind")=="status" and not can_read(mode))):
+                await send(chat,"Потрібне право запису (а для зміни статусу — ще й читання). /cancel")
                 return
             if payload.get("kind")=="status":
                 changed=await sheet(store.update_status,table,payload["record_id"],
@@ -1299,7 +1270,9 @@ async def handle_message(update):
                             "або /cancel для нового запиту.")
             return
         if text.lower().startswith("/ask "):
-            table,_=await sheet(choose,uid,"")
+            table,mode=await sheet(choose,uid,"")
+            if not can_read(mode):
+                raise ValueError("Для перегляду даних потрібен дозвіл на читання.")
             await send(chat,await read_answer(uid,table,text[5:].strip()))
             return
         if text.lower().startswith("/add "):
