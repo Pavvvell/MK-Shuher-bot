@@ -92,7 +92,7 @@ class PurchaseBundleTests(unittest.TestCase):
             validate_persistence(bundle)
 
     def test_invalid_amounts_and_duplicate_image_indices_rejected(self):
-        for amount in ("-26.82","0","NaN","26,82 грн",""):
+        for amount in ("-26.82","0","NaN","not a price",""):
             raw=sample()
             raw["groups"][0]["amount"]=amount
             with self.subTest(amount=amount),self.assertRaises(ValueError):
@@ -101,6 +101,12 @@ class PurchaseBundleTests(unittest.TestCase):
         raw["images"][1]["index"]=1
         with self.assertRaisesRegex(ValueError,"Номери фото"):
             validate_package(raw,3)
+
+    def test_visible_currency_suffix_allowed_and_normalized(self):
+        raw=sample()
+        raw["groups"][0]["amount"]="26,82 грн"
+        pkg=validate_package(raw,3)
+        self.assertEqual(pkg["groups"][0]["amount"],"26.82")
 
     def test_two_independent_invoices_need_separate_projects(self):
         raw={
