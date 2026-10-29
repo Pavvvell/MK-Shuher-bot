@@ -165,6 +165,18 @@ class SheetsStore:
                 if table:out[table]=row[2]
         return out
 
+    def authorized_users_for_table(self,table,mode="write"):
+        if table not in self.tables():
+            return []
+        known={str(row[0]) for row in self.users()}
+        targets=set()
+        for record in self.data(GRANTS)[1:]:
+            if (len(record)>2 and str(record[0]) in known
+                    and str(record[1]).casefold()==table.casefold()
+                    and record[2]==mode):
+                targets.add(int(record[0]))
+        return sorted(targets)
+
     def get_pending(self,uid):
         for row in self.data(PENDING)[1:]:
             if len(row)>3 and str(row[0])==str(uid) and row[2]:
