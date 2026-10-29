@@ -326,6 +326,9 @@ class SheetsStore:
         resolved=self.resolve(table)
         if not resolved:
             raise ValueError("Таблицю не знайдено.")
+        if resolved in ("Проєкти","Правила Шухера","Запити на проєкти"):
+            raise ValueError("Додавання в цей розділ через загальні заявки заборонено. "
+                             "Нові проєкти погоджує тільки власник.")
         values=dict(values)
         if resolved in ("Заявки","Рахунки"):
             label=str(values.get("Проєкт","")).strip()
