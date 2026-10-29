@@ -147,13 +147,79 @@ class SheetsStore:
         return cleaned
 
     def grant(self,uid,table,mode,owner):
+        from access_ui import READ_ONLY_TABS
         if not self.user(uid):
             raise ValueError("Користувач ще не написав боту /start.")
         resolved=self.resolve(table)
         if not resolved:raise ValueError("Таблиці не знайдено. Перевір /tables.")
+        if mode not in ("read","write","none"):
+            raise ValueError("Некоректний режим доступу.")
+        if resolved in READ_ONLY_TABS and mode=="write":
+            raise ValueError("Цей службовий розділ доступний працівникам тільки для читання.")
         self._upsert(GRANTS,
             lambda r:len(r)>1 and str(r[0])==str(uid) and str(r[1]).casefold()==resolved.casefold(),
             [str(uid),resolved,mode,str(owner)])
+
+    def apply_access_profile(self,uid,profile,owner):
+        """Replace permissions only for standard modules, in one Sheets write.
+
+        Preserve permissions for future HR, production and other custom tabs.
+        Authorization of owner must be enforced in the Telegram handler.
+        """
+        from access_ui import PRESETS, MANAGED_TABS
+        if profile not in PRESETS:
+            raise ValueError("Невідомий шаблон доступу.")
+        if not self.user(uid):
+            raise ValueError("Користувач ще не написав боту /start.")
+        desired=PRESETS[profile][1]
+        managed=[name for name in MANAGED_TABS if name in self.tables()]
+        current=self.data(GRANTS)
+        if not current:
+            current=[META[GRANTS]]
+        rows=[row_values(x,4) for x in current]
+        updated=0
+        for tab in managed:
+            mode=desired.get(tab,"none")
+            indices=[idx for idx,row in enumerate(rows[1:],1)
+                     if row[0]==str(uid) and row[1].casefold()==tab.casefold()]
+            if indices:
+                for idx in indices:
+                    if rows[idx][2]!=mode:
+                        rows[idx][2]=mode
+                        rows[idx][3]=str(owner)
+                        updated+=1
+            elif mode!="none":
+                rows.append([str(uid),tab,mode,str(owner)])
+                updated+=1
+        if updated:
+            self.client.values().update(
+                spreadsheetId=self.id,
+                range=quoted(GRANTS)+f"!A1:D{len(rows)}",
+                valueInputOption="RAW",body={"values":rows},
+            ).execute()
+        return updated
+
+    def revoke_all_access(self,uid,owner):
+        """Revoke every tab, including dynamically created future modules."""
+        if not self.user(uid):
+            raise ValueError("Користувач ще не написав боту /start.")
+        current=self.data(GRANTS)
+        if not current:
+            return 0
+        rows=[row_values(row,4) for row in current]
+        count=0
+        for row in rows[1:]:
+            if row[0]==str(uid) and row[2] in ("read","write"):
+                row[2]="none"
+                row[3]=str(owner)
+                count+=1
+        if count:
+            self.client.values().update(
+                spreadsheetId=self.id,
+                range=quoted(GRANTS)+f"!A1:D{len(rows)}",
+                valueInputOption="RAW",body={"values":rows},
+            ).execute()
+        return count
 
     def permissions(self,uid,owners):
         if int(uid) in owners:
