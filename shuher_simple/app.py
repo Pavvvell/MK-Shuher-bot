@@ -412,12 +412,34 @@ async def ask_owner_about_project(uid,chat,name,rid):
 
 
 def text_mentions_invoice(text):
-    candidate=str(text or "").casefold()
-    return any(phrase in candidate for phrase in
-        ("рахунок на оплат","рахунок до оплат","рахунок для оплат",
-         "виставили рахунок","це рахунок","надсилаю рахунок",
-         "скидаю рахунок","оплата карткою","оплата з карт",
-         "скрін оплати","чек оплати","рахунок-фактура"))
+    """Identify an explicit document SUBMISSION, not commentary about invoices.
+
+    The old substring matcher interpreted an owner's explanation of
+    three unrelated photos as a command to draft ANOTHER invoice.
+    """
+    candidate=str(text or "").casefold().strip()
+    if not candidate:
+        return False
+    if re.search(r"^(?:перше|перші|перша|друге|другі|друга|третє|третя|"
+                 r"поясню|ти|як|чому|звідки|ні[, ]|що б|що за|"
+                 r"вони не|це не)\\b",candidate):
+        return False
+    if any(s in candidate for s in
+           ("не стосуються","не відносяться","не пов'язано",
+            "окремі документи","це два різних")):
+        return False
+    explicit=(
+        "це рахунок","надсилаю рахунок","скидаю рахунок",
+        "рахунок на оплату","рахунок до оплати","рахунок-фактура",
+        "надсилаю оплату","підтвердження оплати",
+        "скрін оплати","чек оплати",
+    )
+    if any(candidate.startswith(s) for s in explicit):
+        return True
+    action=re.search(r"\\b(?:оформи|оформляй|запиши|зареєструй|"
+                     r"проведи|прийми|передай|подай)\\b",candidate)
+    return bool(action and any(s in candidate for s in
+        ("рахунк","оплат","картк","чек")))
 
 
 def wants_purchase_bundle(text):
