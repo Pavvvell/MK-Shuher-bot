@@ -78,6 +78,45 @@ class OutreachTests(unittest.TestCase):
             "сформулюй два повідомлення, які я сам скопіюю",
             [],USERS,OWNERS))
 
+    def test_photo_followup_message_to_yuriy_is_direct_action(self):
+        command="ну то все? фото ти отримав, з нього номер ТТН взяв, Юрі напишеш?"
+        self.assertTrue(is_send_request(command))
+        history=[
+            {"role":"user","content":"Перевір номер ТТН з фото"},
+            {"role":"assistant","content":
+             "ТТН на фото: 12345678901234. Юрі потрібно надіслати:\\n"
+             "> Юро, очікуємо демпфери для проєкту ДП, ТТН 12345678901234. "
+             "Після отримання повідом комірника.\\n"
+             "Підтвердження надсилання немає."},
+        ]
+        plan=delivery_plan(command,history,USERS,OWNERS)
+        self.assertEqual(len(plan),1)
+        self.assertEqual(plan[0]["id"],100000002)
+        self.assertIn("ТТН 12345678901234",plan[0]["text"])
+        self.assertIn("Юро",plan[0]["text"])
+
+    def test_omission_and_past_tense_are_not_send_commands(self):
+        for phrase in (
+            "не напишеш Юрі",
+            "я вже написав Юрі",
+            "Ти вже написав Юрі?",
+            "Чи не надішлеш Юрі?",
+            "напиши мені текст для Юри",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertFalse(is_send_request(phrase))
+        self.assertTrue(is_send_request("Юрі напишеш?"))
+        self.assertTrue(is_send_request("Можеш Юрі надіслати ТТН?"))
+
+    def test_contextual_quote_does_not_select_unknown_recipient(self):
+        history=[
+            {"role":"user","content":"Нова партія кріплень"},
+            {"role":"assistant","content":
+             "> Юро, очікуємо запчастини за номером 12345678901234."},
+        ]
+        with self.assertRaisesRegex(ValueError,"Кому саме"):
+            delivery_plan("напишеш їм?",history,USERS,OWNERS)
+
     def test_previous_explicit_recipients_override_old_reference(self):
         history=[
             {"role":"user","content":"повідом Юрі що вже є рахунок"},
