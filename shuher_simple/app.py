@@ -28,6 +28,7 @@ from projects import (canonical_project, approved_projects, select_project_messa
                       explicit_project_in_message)
 from media import (MAX_PHOTO_BYTES, telegram_file_bytes, transcribe_telegram_voice)
 from natural import interpret_natural, status_candidates, status_selection_text
+from outreach import is_send_request, delivery_plan
 
 logging.basicConfig(level=logging.INFO)
 log=logging.getLogger("shuher-lite")
@@ -201,7 +202,13 @@ CHAT_SYSTEM=(
     "Ти НЕ маєш можливості записувати або змінювати Google Sheets самостійно. "
     "Якщо після консультації людина хоче оформити заявку, порадь їй написати "
     "'оформляй заявку', і сервер покаже чернетку для підтвердження. "
-    "Ніколи не оголошуй запис підтвердженим без фактичного серверного підтвердження."
+    "Ніколи не оголошуй запис підтвердженим без фактичного серверного підтвердження. "
+    "Шухер може надсилати особисті Telegram-повідомлення зареєстрованим працівникам "
+    "за прямим дорученням власника: цю дію виконує сервер, а не GPT у чаті. "
+    "Не відповідай лише чернеткою, якщо власник попросив саме надіслати. "
+    "Не стверджуй, що ти надіслав повідомлення, якщо сервер не підтвердив доставку. "
+    "Не обіцяй написати потім або 'коли будуть онлайн': відкладених розсилок немає."
+
 )
 
 
@@ -589,6 +596,36 @@ async def stage_status(uid,chat,table,record_id,field,value,label=""):
     await send(chat,f"Змінити «{resolved}»?\n"+title+
                f"ID: {record_id}\n{field}: {old or 'порожньо'} → {value}\n"+
                "Підтверди: так / ні.")
+
+
+async def handle_staff_outreach(uid,chat,text):
+    """Send separate private Telegram messages only on explicit owner's order."""
+    if uid not in owners or not is_send_request(text):
+        return False
+    state=await sheet(store.get_dialogue,uid)
+    users=await sheet(store.users)
+    plan=delivery_plan(text,state["history"],users,owners)
+    # Each employee gets a separate sendMessage request. Failure to reach one
+    # staff member must not prevent attempting the others.
+    async def deliver(item):
+        try:
+            await bot_call("sendMessage",{
+                "chat_id":item["id"],"text":item["text"],
+            })
+            return item["name"],True
+        except Exception:
+            log.exception("Staff Telegram message failed for recipient %s",item["id"])
+            return item["name"],False
+
+    results=await asyncio.gather(*(deliver(item) for item in plan))
+    summary="\\n".join(
+        ("✅ "+name+": повідомлення надіслано."
+         if success else
+         "❌ "+name+": Telegram не прийняв повідомлення; перевір, чи людина відкрила бота.")
+        for name,success in results)
+    await sheet(store.save_dialogue,uid,remember_exchange(state,text,summary))
+    await send(chat,summary)
+    return True
 
 
 async def handle_natural(uid,chat,person,text):
@@ -1270,6 +1307,8 @@ async def handle_message(update):
             text.casefold().strip(),
         ):
             await show_owner_users(chat)
+            return
+        if await handle_staff_outreach(uid,chat,text):
             return
         if await handle_natural(uid,chat,person,text):
             return
