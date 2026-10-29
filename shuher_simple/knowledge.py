@@ -77,7 +77,7 @@ def search_history(source, access, is_owner, query, max_hits=26):
             "searched_tabs":authorized}
 
 
-def render_owner_rules(rows, max_chars=8500):
+def render_owner_rules(rows, max_chars=14500):
     """Render live rules, explicitly separating active policies and plans."""
     parts=[]
     size=0
