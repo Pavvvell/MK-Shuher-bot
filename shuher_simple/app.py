@@ -422,7 +422,7 @@ def text_mentions_invoice(text):
         return False
     if re.search(r"^(?:перше|перші|перша|друге|другі|друга|третє|третя|"
                  r"поясню|ти|як|чому|звідки|ні[, ]|що б|що за|"
-                 r"вони не|це не)\\b",candidate):
+                 r"вони не|це не)\b",candidate):
         return False
     if any(s in candidate for s in
            ("не стосуються","не відносяться","не пов'язано",
@@ -436,8 +436,8 @@ def text_mentions_invoice(text):
     )
     if any(candidate.startswith(s) for s in explicit):
         return True
-    action=re.search(r"\\b(?:оформи|оформляй|запиши|зареєструй|"
-                     r"проведи|прийми|передай|подай)\\b",candidate)
+    action=re.search(r"\b(?:оформи|оформляй|запиши|зареєструй|"
+                     r"проведи|прийми|передай|подай)\b",candidate)
     return bool(action and any(s in candidate for s in
         ("рахунк","оплат","картк","чек")))
 
