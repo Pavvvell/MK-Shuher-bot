@@ -180,5 +180,5 @@ def is_invoice_submission(text):
     action=re.search(r"\b(?:оформи|оформляй|запиши|зареєструй|"
                      r"проведи|прийми|передай|подай)\b",candidate)
     return bool(action and any(s in candidate for s in
-        ("рахунк","оплат","картк","чек")))
+        ("рахун","оплат","картк","чек")))
 
