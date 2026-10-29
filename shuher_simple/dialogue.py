@@ -10,7 +10,7 @@ MAX_HISTORY_CHARS = 10500
 
 
 def new_dialogue():
-    return {"history": [], "photos": [], "notes": ""}
+    return {"history": [], "photos": [], "documents": [], "notes": ""}
 
 
 def normalize_dialogue(raw):
@@ -36,6 +36,19 @@ def normalize_dialogue(raw):
                     state["photos"].append({"file_id": file_id, "group": str(photo.get("group") or "")[:140],
                                             "mime": photo.get("mime") if photo.get("mime") in
                                             ("image/jpeg","image/png","image/webp") else "image/jpeg"})
+    docs=raw.get("documents",[])
+    if isinstance(docs,list):
+        for item in docs[-4:]:
+            if not isinstance(item,dict):
+                continue
+            file_id=str(item.get("file_id") or "")
+            if not 0<len(file_id)<=320:
+                continue
+            state["documents"].append({
+                "file_id":file_id,
+                "file_name":str(item.get("file_name") or "document.pdf")[:150],
+                "mime":"application/pdf",
+            })
     state["notes"] = str(raw.get("notes") or "")[:1600]
     return state
 
@@ -54,6 +67,28 @@ def queue_photo(state, file_id, group="", caption="", mime="image/jpeg"):
         if note and note not in state["notes"]:
             state["notes"] = (state["notes"] + "\n" + note).strip()[:1600]
     return state, was_empty
+
+
+def queue_document(state,file_id,file_name="document.pdf",caption=""):
+    state=normalize_dialogue(state)
+    if len(state["documents"])>=4:
+        raise ValueError("Не більше чотирьох PDF за один раз.")
+    if not any(item["file_id"]==file_id for item in state["documents"]):
+        state["documents"].append({
+            "file_id":str(file_id),"file_name":str(file_name)[:150],
+            "mime":"application/pdf",
+        })
+    if caption:
+        state["notes"]=(state["notes"]+"\n"+str(caption)).strip()[:1600]
+    return state
+
+
+def clear_attachments(state):
+    state=normalize_dialogue(state)
+    state["photos"]=[]
+    state["documents"]=[]
+    state["notes"]=""
+    return state
 
 
 def remember_exchange(state, user_text, answer, photos_used=0):
