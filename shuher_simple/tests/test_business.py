@@ -82,7 +82,7 @@ class IntegrationRules(unittest.TestCase):
     def test_request_requires_project(self):
         obj=self.new_store()
         obj.append_record=Mock()
-        with self.assertRaisesRegex(ValueError, "проєкт"):
+        with self.assertRaisesRegex(ValueError, "[Пп]роєкт"):
             obj.append_workflow("Заявки", {
                 "Найменування":"Гайка","Кількість":"10","Од. вим.":"шт."
             },"R-1","Комірник")
