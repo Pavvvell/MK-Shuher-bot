@@ -97,24 +97,8 @@ def user_view(record,access,titles):
         "Читання — перегляд даних; Запис — додавання без перегляду; "
         "Ч+З — перегляд і запис. ✓ — чинний режим. "
         "✕ біля назви прибирає доступ. 🔒 — тільки читання.\n"
-        "Кожну зміну потрібно підтвердити."
+        "Натискання одразу змінює право доступу."
     )
     return text,keyboard(rows)
 
 
-def preview_view(uid,title,changes,action):
-    if changes:
-        change_text="\n".join(
-            f"• {tab}: {MODE_LABEL.get(old,'Без доступу')} → "
-            f"{MODE_LABEL.get(new,'Без доступу')}"
-            for tab,old,new in changes
-        )
-    else:
-        change_text="Змін не потрібно: права вже відповідають вибору."
-    text=(f"🔐 Налаштування для {title}\n\n"+change_text+
-          "\n\nПідтвердити зміну прав?")
-    rows=[
-      [button("✅ Підтвердити",action)],
-      [button("❌ Назад до списку",f"su:u:{uid}")]
-    ]
-    return text,keyboard(rows)
