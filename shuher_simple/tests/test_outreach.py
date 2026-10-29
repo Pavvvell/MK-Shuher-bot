@@ -95,6 +95,23 @@ class OutreachTests(unittest.TestCase):
         self.assertIn("ТТН 12345678901234",plan[0]["text"])
         self.assertIn("Юро",plan[0]["text"])
 
+    def test_multiline_ttn_quote_is_not_truncated_or_padded_with_disclaimer(self):
+        command="ну то все? з фото номер ТТН взяв, Юрі напишеш?"
+        history=[
+            {"role":"user","content":"Фото з номером ТТН"},
+            {"role":"assistant","content":
+             "Юрі потрібно надіслати:\n"
+             "> Юро, очікуємо демпфери для проєкту ДП, ТТН\n"
+             "12345678901234. Щойно отримаєш —\n"
+             "передай Олександру Петровичу.\n\n"
+             "**Підтвердження надсилання немає:** ще не відправляв."},
+        ]
+        plan=delivery_plan(command,history,USERS,OWNERS)
+        self.assertEqual(len(plan),1)
+        self.assertIn("12345678901234",plan[0]["text"])
+        self.assertIn("передай Олександру Петровичу.",plan[0]["text"])
+        self.assertNotIn("Підтвердження",plan[0]["text"])
+
     def test_omission_and_past_tense_are_not_send_commands(self):
         for phrase in (
             "не напишеш Юрі",
