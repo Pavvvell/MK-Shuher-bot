@@ -21,7 +21,7 @@ from knowledge import search_history, render_owner_rules
 from receipt_pdf import photos_to_pdf
 from purchase_bundle import (validate_package, missing_invoice_project,
                              apply_invoice_project, grouped_preview,
-                             validate_persistence)
+                             validate_persistence, is_invoice_submission)
 from dialogue import queue_photo, queue_document, clear_attachments, remember_exchange, history_excerpt
 from access_ui import (button as access_button, keyboard as access_keyboard,
                        list_view, user_view, CODE_MODE, MODE_LABEL,
@@ -412,34 +412,7 @@ async def ask_owner_about_project(uid,chat,name,rid):
 
 
 def text_mentions_invoice(text):
-    """Identify an explicit document SUBMISSION, not commentary about invoices.
-
-    The old substring matcher interpreted an owner's explanation of
-    three unrelated photos as a command to draft ANOTHER invoice.
-    """
-    candidate=str(text or "").casefold().strip()
-    if not candidate:
-        return False
-    if re.search(r"^(?:перше|перші|перша|друге|другі|друга|третє|третя|"
-                 r"поясню|ти|як|чому|звідки|ні[, ]|що б|що за|"
-                 r"вони не|це не)\b",candidate):
-        return False
-    if any(s in candidate for s in
-           ("не стосуються","не відносяться","не пов'язано",
-            "окремі документи","це два різних")):
-        return False
-    explicit=(
-        "це рахунок","надсилаю рахунок","скидаю рахунок",
-        "рахунок на оплату","рахунок до оплати","рахунок-фактура",
-        "надсилаю оплату","підтвердження оплати",
-        "скрін оплати","чек оплати",
-    )
-    if any(candidate.startswith(s) for s in explicit):
-        return True
-    action=re.search(r"\b(?:оформи|оформляй|запиши|зареєструй|"
-                     r"проведи|прийми|передай|подай)\b",candidate)
-    return bool(action and any(s in candidate for s in
-        ("рахунк","оплат","картк","чек")))
+    return is_invoice_submission(text)
 
 
 def wants_purchase_bundle(text):
