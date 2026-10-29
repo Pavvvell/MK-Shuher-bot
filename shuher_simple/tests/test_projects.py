@@ -4,6 +4,7 @@ from unittest.mock import Mock
 
 from projects import (approved_projects, canonical_project, select_project_answer,
                       requested_new_project, explicit_project_in_message,
+                      unique_explicit_project,
                       approve_new_project)
 from store import SheetsStore
 
@@ -48,6 +49,15 @@ class ProjectTests(unittest.TestCase):
         self.assertIsNone(explicit_project_in_message(db,"Рахунок з підписом"))
         self.assertIsNone(explicit_project_in_message(db,"Може ДП?"))
         self.assertIsNone(explicit_project_in_message(db,"Мет обробка за замовчуванням"))
+
+    def test_mixed_projects_must_not_leak_into_invoice(self):
+        store=Fixture()
+        self.assertEqual(unique_explicit_project(
+            store,"перше фото — проєкт STF, третє — рахунок, проєкт Мет обробка"),None)
+        self.assertEqual(unique_explicit_project(
+            store,"третє фото — рахунок на проєкт Мет обробка"),"Мет обробка")
+        self.assertIsNone(unique_explicit_project(
+            store,"карткова покупка для STF; рахунок без проєкту"))
 
     def test_new_request_parser(self):
         self.assertEqual(requested_new_project("новий: Другий цех"),"Другий цех")
