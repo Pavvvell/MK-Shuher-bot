@@ -563,9 +563,9 @@ async def commit_purchase_bundle(uid,chat,person,payload):
                                   values,record_id,author)
         else:
             pay=[photos[i-1]["file_id"] for i in entry["images"]
-                 if package["images"][i]=="card_payment"]
+                 if package["images"].get(str(i),package["images"].get(i))=="card_payment"]
             goods=[photos[i-1]["file_id"] for i in entry["images"]
-                   if package["images"][i]=="goods_photo"]
+                   if package["images"].get(str(i),package["images"].get(i))=="goods_photo"]
             values={
                 "Проєкт":entry.get("project") or "",
                 "Найменування / опис":entry["description"],
@@ -583,7 +583,7 @@ async def commit_purchase_bundle(uid,chat,person,payload):
     await sheet(store.clear_pending,uid)
     state=await sheet(store.get_dialogue,uid)
     await sheet(store.save_dialogue,uid,clear_attachments(state))
-    report=["Шухер: Юрій подав документи після звірки. "
+    report=["Шухер: "+author+" подав документи після звірки. "
             "Різні покупки НЕ об'єднані.\n"
             "Пакет: "+payload["bundle_id"]]
     for entry,record_id,created in outcomes:
