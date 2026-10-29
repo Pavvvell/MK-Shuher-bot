@@ -18,7 +18,9 @@ from store import SheetsStore
 from business import today_procurement, positive_quantity
 from company import build_company_context
 from knowledge import search_history, render_owner_rules
-from dialogue import queue_photo, remember_exchange, history_excerpt
+from dialogue import queue_photo, queue_document, clear_attachments, remember_exchange, history_excerpt
+from projects import (canonical_project, approved_projects, select_project_message,
+                      select_project_answer, requested_new_project, approve_new_project)
 from media import (MAX_PHOTO_BYTES, telegram_file_bytes, transcribe_telegram_voice)
 from natural import interpret_natural, status_candidates, status_selection_text
 
@@ -282,7 +284,16 @@ async def stage_append(uid,chat,person,table,text):
         await send(chat,tip)
         return
     if resolved=="Заявки":
-        missing=[f for f in ("Проєкт","Найменування","Кількість","Од. вим.") if not clean.get(f)]
+        project=await sheet(canonical_project,store,clean.get("Проєкт"))
+        if not project:
+            await sheet(store.save_pending,uid,resolved,{
+                "kind":"project_pick","values":clean,
+                "record_id":"SH-"+datetime.now(KYIV).strftime("%Y%m%d%H%M")+"-"+secrets.token_hex(3).upper(),
+            })
+            await send(chat,await sheet(select_project_message,store,"заявки"))
+            return
+        clean["Проєкт"]=project
+        missing=[f for f in ("Найменування","Кількість","Од. вим.") if not clean.get(f)]
         if missing:
             tip="Щоб оформити заявку, обов’язково уточни: "+", ".join(missing)+"."
             await sheet(store.save_dialogue,uid,remember_exchange(state,text,tip))
@@ -303,6 +314,167 @@ async def stage_append(uid,chat,person,table,text):
     preview="\n".join(f"{key}: {value}" for key,value in clean.items())
     await send(chat,"Записати в «"+resolved+"»?\n"+preview+
                     "\n\nПідтверди: так / ні. Чернетка діє 30 хв.")
+
+
+async def stage_project_request(uid,chat,person,name,reason=""):
+    if not await sheet(permission,uid):
+        await send(chat,"Щоб запропонувати проєкт, потрібен доступ до Шухера.")
+        return
+    name=str(name or "").strip()
+    if not name or len(name)>90:
+        await send(chat,"Напиши назву нового проєкту, наприклад: новий: Назва")
+        return
+    found=await sheet(canonical_project,store,name)
+    if found:
+        await send(chat,"Проєкт «"+found+"» уже є у довіднику.")
+        return
+    rid="NPR-"+datetime.now(KYIV).strftime("%Y%m%d%H%M")+"-"+secrets.token_hex(3).upper()
+    await sheet(store.save_pending,uid,"Запити на проєкти",{
+        "kind":"project_request","record_id":rid,"name":name,"reason":reason[:300],
+    })
+    await send(chat,"Надіслати власнику запит на додавання проєкту «"+name+
+               "»?\nПідтверди «так» або «ні». До погодження проєкт не можна "
+               "використовувати для рахунків чи заявок.")
+
+
+async def ask_owner_about_project(uid,chat,name,rid):
+    for owner in owners:
+        try:
+            await send(owner,"Шухер: запит на НОВИЙ ПРОЄКТ\nНазва: "+name+
+                       "\nПодав Telegram ID: "+str(uid)+
+                       "\nID запиту: "+rid+
+                       "\nПогодити: /projectapprove "+rid+
+                       "\nВідмовити: /projectreject "+rid)
+        except Exception:
+            log.exception("Unable to notify owner of project request")
+
+
+def text_mentions_invoice(text):
+    candidate=str(text or "").casefold()
+    return any(phrase in candidate for phrase in
+        ("рахунок на оплат","рахунок до оплат","рахунок для оплат",
+         "виставили рахунок","це рахунок","надсилаю рахунок",
+         "скидаю рахунок","оплата карткою","оплата з карт",
+         "скрін оплати","чек оплати","рахунок-фактура"))
+
+
+async def finish_invoice_draft(uid,chat,values,attachments):
+    """Project must be approved before invoice can reach owner."""
+    cleaned=dict(values)
+    resolved=await sheet(canonical_project,store,cleaned.get("Проєкт"))
+    if not resolved:
+        rid="SH-"+datetime.now(KYIV).strftime("%Y%m%d%H%M")+"-"+secrets.token_hex(3).upper()
+        await sheet(store.save_pending,uid,"Рахунки",{
+            "kind":"project_pick","record_id":rid,
+            "values":cleaned,"attachments":attachments,
+        })
+        await send(chat,await sheet(select_project_message,store,"рахунку на оплату"))
+        return
+    cleaned["Проєкт"]=resolved
+    cleaned["Дата отримання"]=datetime.now(KYIV).strftime("%d.%m.%Y %H:%M")
+    cleaned["Статус власника"]="Очікує перевірки"
+    cleaned["Потрібна перевірка"]=cleaned.get("Потрібна перевірка") or "Так"
+    cleaned["Джерело"]="Telegram"
+    cleaned["Тип документа"]=cleaned.get("Тип документа") or "Рахунок"
+    cleaned["Документ / посилання"]=(
+        "Фото Telegram: "+str(len(attachments.get("photos",[])))+
+        "; PDF: "+str(len(attachments.get("documents",[])))
+    )
+    cleaned["Telegram файли"]=", ".join(
+        file["file_id"] for file in attachments.get("photos",[])+attachments.get("documents",[])
+    )
+    rid="SH-"+datetime.now(KYIV).strftime("%Y%m%d%H%M")+"-"+secrets.token_hex(3).upper()
+    await sheet(store.save_pending,uid,"Рахунки",{
+        "kind":"invoice","record_id":rid,"values":cleaned,"attachments":attachments,
+    })
+    preview="\n".join(f"{key}: {value}" for key,value in cleaned.items()
+                      if key not in ("Telegram файли","Джерело"))
+    await send(chat,"Рахунок для проєкту «"+resolved+"».\n"+preview+
+               "\n\nПісля твого «так» внесу в облік і передам власнику на перевірку. "
+               "Без його рішення бухгалтерії не відправлятиму.")
+
+
+async def stage_invoice(uid,chat,person,text):
+    access=await sheet(permission,uid)
+    if access.get("Рахунки")!="write" and uid not in owners:
+        await send(chat,"Для передачі рахунків власник має надати тобі право запису у «Рахунки».")
+        return
+    state=await sheet(store.get_dialogue,uid)
+    attachments={"photos":state["photos"],"documents":state["documents"]}
+    if not attachments["photos"] and not attachments["documents"] and len(text)<18:
+        await send(chat,"Надішли фото або PDF рахунку та зазнач проєкт.")
+        return
+    from_image=[]
+    for item in attachments["photos"]:
+        data=await telegram_file_bytes(bot_call,settings.telegram_bot_token,
+                                       item["file_id"],MAX_PHOTO_BYTES)
+        from_image.append({"type":"image_url","image_url":{
+            "url":"data:"+item.get("mime","image/jpeg")+";base64,"+
+                  base64.b64encode(data).decode("ascii"),"detail":"auto",
+        }})
+    prompt=(
+        "Витягни ТІЛЬКИ факти, явно зазначені у тексті або на фото рахунку. "
+        "Відповідь ТІЛЬКИ JSON з ключами: Проєкт, Постачальник, Номер рахунку, "
+        "Сума, Валюта, Коментар, Тип документа, Потрібна перевірка. "
+        "Для невідомого значення став порожній рядок, нічого не вигадуй. "
+        "Проєкт береться ТІЛЬКИ з прямого твердження працівника в цьому тексті, "
+        "не з імені постачальника, історії або припущення. "
+        "Тип документа може бути Рахунок або Підтвердження оплати карткою. "
+        "Перевірка: якщо є очевидна розбіжність сум або реквізитів, "
+        "коротко опиши її в Потрібна перевірка. "
+        "PDF вкладення вмістом не розпізнано — не видавай його за прочитаний. "
+        "Повідомлення: "+str(text)[:1600] +
+        ("\nПідпис до вкладень: "+state["notes"] if state["notes"] else "")
+    )
+    messages=[
+        {"role":"system","content":"Ти обережно зчитуєш рахунки. Поверни тільки JSON."},
+        {"role":"user","content":[{"type":"text","text":prompt}]+from_image
+            if from_image else prompt},
+    ]
+    response=await ask_model(messages,max_tokens=650,json_mode=True)
+    try:
+        parsed=json.loads(response)
+        if not isinstance(parsed,dict):
+            parsed={}
+    except (TypeError,ValueError):
+        parsed={}
+    values={}
+    for field in ("Проєкт","Постачальник","Номер рахунку","Сума","Валюта",
+                  "Коментар","Тип документа","Потрібна перевірка"):
+        v=parsed.get(field)
+        if (isinstance(v,(str,int,float)) and
+                str(v).strip().casefold() not in ("","null","none")):
+            values[field]=str(v).strip()[:500]
+    # Do not accept a project guessed by a model from a document:
+    # it must appear explicitly in the user's CURRENT statement.
+    explicit=next((p for p in await sheet(approved_projects,store)
+                   if p.casefold() in text.casefold()),None)
+    values["Проєкт"]=explicit or ""
+    if attachments["documents"]:
+        values["Коментар"]=(values.get("Коментар","")+"\n"+
+                            "PDF долучено без автоматичного розпізнавання вмісту.").strip()
+    await finish_invoice_draft(uid,chat,values,attachments)
+
+
+async def notify_owner_invoice(uid,record_id,values,attachments):
+    message=("Шухер: отримано документ для перевірки власником.\n"
+        "ID: "+record_id+"\n"
+        "Проєкт: "+values["Проєкт"]+"\n"
+        "Тип: "+values.get("Тип документа","Рахунок")+"\n"
+        "Постачальник: "+values.get("Постачальник","не вказано")+"\n"
+        "Сума: "+values.get("Сума","потрібна перевірка")+" "+
+                   values.get("Валюта","")+"\n"
+        "Потрібна перевірка: "+values.get("Потрібна перевірка","Так")+
+        "\nНе передано бухгалтерії. Власник має переглянути рахунок.")
+    for owner in owners:
+        try:
+            await send(owner,message)
+            for photo in attachments.get("photos",[]):
+                await bot_call("sendPhoto",{"chat_id":owner,"photo":photo["file_id"]})
+            for doc in attachments.get("documents",[]):
+                await bot_call("sendDocument",{"chat_id":owner,"document":doc["file_id"]})
+        except Exception:
+            log.exception("Failed to send invoice media to owner %s",owner)
 
 
 async def stage_status(uid,chat,table,record_id,field,value,label=""):
