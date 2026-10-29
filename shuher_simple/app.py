@@ -133,6 +133,8 @@ async def parse_request(text,table,available,force=None,history=""):
         "Не вигадуй значення, яких немає в повідомленні або попередньому діалозі. "
         "Коли користувач каже 'оформляй', бери уточнені характеристики "
         "із його попереднього діалогу, але не вигадуй чисел. "
+        "Коли в заявці потрібно відшукати новий товар, постачальника чи аналог, "
+        "заповни колонку «Потрібен пошук» словом «Так», якщо вона є. "
         "Для append вказуй лише назви колонок із переданого списку. "
         "Колонки ID, Дата й Автор заповнить сервер. "
         "Доступні таблиці: "+json.dumps(list(available),ensure_ascii=False)+". "
@@ -286,6 +288,15 @@ async def stage_append(uid,chat,person,table,text):
         await send(chat,tip)
         return
     if resolved=="Заявки":
+        phrase=text.casefold()
+        needs_search=any(x in phrase for x in (
+            "треба знайти", "потрібно знайти", "знайти постачальника",
+            "підібрати нов", "підшукати", "пошук постачальника",
+            "шукати де купити", "немає постачальника", "знайти аналог",
+        ))
+        if needs_search:
+            clean["Потрібен пошук"]="Так"
+            clean["Тип потреби"]="Пошук і підбір"
         project=await sheet(canonical_project,store,clean.get("Проєкт"))
         if not project:
             await sheet(store.save_pending,uid,resolved,{
@@ -316,6 +327,35 @@ async def stage_append(uid,chat,person,table,text):
     preview="\n".join(f"{key}: {value}" for key,value in clean.items())
     await send(chat,"Записати в «"+resolved+"»?\n"+preview+
                     "\n\nПідтверди: так / ні. Чернетка діє 30 хв.")
+
+
+async def notify_procurement(created_by,record_id,values):
+    """Share confirmed requests with authorized purchasers and flag searches."""
+    project=values.get("Проєкт","")
+    name=values.get("Найменування","")
+    qty=values.get("Кількість","")
+    unit=values.get("Од. вим.","")
+    needs=str(values.get("Потрібен пошук","")).strip().casefold() in (
+        "так","yes","true","потрібно","пошук")
+    msg=("Нова заявка у закупівлю\n"+
+         "Проєкт: "+project+"\nПозиція: "+name+
+         "\nКількість: "+qty+" "+unit+
+         "\nID: "+record_id)
+    purchasers=await sheet(store.authorized_users_for_table,"Закупка")
+    for telegram_id in purchasers:
+        if telegram_id==created_by or telegram_id in owners:
+            continue
+        try:
+            await send(telegram_id,msg+"\nЗаявка вже записана в «Закупка».")
+        except Exception:
+            log.exception("Cannot alert purchasing user %s",telegram_id)
+    if needs:
+        for owner in owners:
+            try:
+                await send(owner,"Шухер: ПОТРІБЕН ПОШУК нової позиції або постачальника!\n"+
+                           msg+"\nТи можеш допомогти з пошуком у терміновому випадку.")
+            except Exception:
+                log.exception("Cannot alert owner about research request")
 
 
 async def stage_project_request(uid,chat,person,name,reason=""):
@@ -1075,6 +1115,8 @@ async def handle_message(update):
                 await send(chat,"Заявка "+payload["record_id"]+
                            " записана й автоматично пов'язана із закупівлею ZK-"+
                            payload["record_id"]+("." if linked else " (зв'язок уже існував)."))
+                if added:
+                    await notify_procurement(uid,payload["record_id"],payload["values"])
             else:
                 await send(chat,("Запис додано в «"+table+"». ID "+payload["record_id"])
                            if added else "Цей запис уже є в таблиці. Дублікат не створено.")
