@@ -19,6 +19,7 @@ from business import today_procurement, positive_quantity
 from company import build_company_context
 from knowledge import search_history, render_owner_rules
 from receipt_pdf import photos_to_pdf
+from payable_invoices import is_payable_request, payable_rows, send_invoice
 from purchase_bundle import (validate_package, missing_invoice_project,
                              apply_invoice_project, grouped_preview,
                              validate_persistence, is_invoice_submission)
@@ -841,6 +842,35 @@ async def notify_owner_invoice(uid,record_id,values,attachments):
             log.exception("Failed to send invoice media to owner %s",owner)
 
 
+async def show_payable_invoices(uid,chat):
+    if uid not in owners:
+        await send(chat,"Рахунки до оплати переглядає власник.")
+        return
+    headers,rows=await sheet(store.read_table,"Рахунки")
+    invoices=payable_rows(headers,rows)
+    if not invoices:
+        await send(chat,"У «Рахунки» немає неоплачених рахунків для перегляду.")
+        return
+    users=await sheet(store.users)
+    await send(chat,"Рахунків без підтвердженої повної оплати: "+str(len(invoices))+
+               ". Надсилаю збережені файли. Записи з неповними даними ще потребують перевірки.")
+
+    async def fetch_file(fid,limit):
+        return await telegram_file_bytes(bot_call,settings.telegram_bot_token,fid,limit)
+
+    delivered=0
+    for row in invoices:
+        try:
+            await send_invoice(row,chat,users,bot_call,fetch_file)
+            delivered+=1
+        except Exception:
+            log.warning("Invoice file delivery failed for %s",row["ID"])
+            await send(chat,"Не вдалося надіслати всі файли рахунку "+row["ID"]+
+                       ". Перевір збережені вкладення або надішли файл повторно.")
+    await send(chat,"Надіслано рахунків: "+str(delivered)+" із "+str(len(invoices))+
+               ". Статуси не змінено; бухгалтерії нічого не відправлено.")
+
+
 async def stage_status(uid,chat,table,record_id,field,value,label=""):
     """Save an explicit, user-confirmed, single-cell status change."""
     resolved,mode=await sheet(choose,uid,table)
@@ -1071,6 +1101,9 @@ async def handle_natural(uid,chat,person,text):
     if intent=="invoice":
         await stage_invoice(uid,chat,person,text)
         return True
+    if intent=="payable_invoices":
+        await show_payable_invoices(uid,chat)
+        return True
     if intent=="read":
         await send(chat,await read_answer(uid,action["table"],text))
         return True
@@ -1235,6 +1268,7 @@ async def handle_command(uid,chat,person,text):
             intro+=("\n\nКерування лише для власника:\n"
                     "/users — усі користувачі й керування доступами кнопками\n"
                     "/today — сьогоднішні заявки у закупівлю\n"
+                    "/invoices — рахунки до оплати: PDF і фото з підписами\n"
                     "/create Назва | Колонка1, Колонка2 — створити вкладку\n"
                     "/grant ID read Назва — лише перегляд\n"
                     "/grant ID write Назва — читання і запис (write_only — лише запис)\n"
@@ -1533,6 +1567,10 @@ async def handle_message(update):
                 msg,bot_call,settings.telegram_bot_token,openai)
             await send(chat,"🎙️ Почув: "+text)
         if not text:
+            return
+        # An explicit read must not submit queued media or consume a pending draft.
+        if is_payable_request(text):
+            await show_payable_invoices(uid,chat)
             return
         # Owner's direct Telegram-message instruction takes priority over
         # pending photo analysis and unrelated Google Sheets drafts.

@@ -110,8 +110,13 @@ async def interpret_natural(text, permissions, is_owner, ask_model, history=""):
         return {"intent":"other"}
     system=(
         "Ти маршрутизатор повідомлень для Telegram-помічника Шухер. "
-        "Поверни ТІЛЬКИ JSON: intent (status|balance|today|history|invoice|append|read|other), "
+        "Поверни ТІЛЬКИ JSON: intent (status|balance|today|history|invoice|payable_invoices|append|read|other), "
         "table, field, value, target. "
+        "payable_invoices — власник просить показати або надіслати всі рахунки до оплати, "
+        "неоплачені рахунки або рахунки, які треба передати на оплату. "
+        "Приклад: 'покажи всі рахунки які я мав кинути на оплату'. "
+        "Це читання збережених PDF і фото, не подання нового рахунку й не відправка бухгалтерії. "
+        "Для запиту про окремий проєкт, постачальника або конкретний рахунок використовуй read. "
         "status — користувач повідомляє про ЗМІНУ статусу вже наявної позиції. "
         "Приклад: 'болти М8×30 вже замовили' -> "
         "status, Закупка, Статус замовлення, Замовлено, болти М8×30; "
@@ -166,6 +171,8 @@ async def interpret_natural(text, permissions, is_owner, ask_model, history=""):
     if not isinstance(data,dict):
         return {"intent":"other"}
     intent=str(data.get("intent") or "").lower()
+    if intent=="payable_invoices" and is_owner:
+        return {"intent":"payable_invoices"}
     if intent=="today" and is_owner:
         return {"intent":"today"}
     if intent=="balance" and can_balance:
