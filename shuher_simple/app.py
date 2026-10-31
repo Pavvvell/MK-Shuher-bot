@@ -14,7 +14,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from openai import AsyncOpenAI
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from store import SheetsStore
+from store import SheetsStore, request_reads
 from business import today_procurement, positive_quantity
 from company import build_company_context
 from knowledge import search_history, render_owner_rules
@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     telegram_bot_token:str
     telegram_webhook_secret:str
     openai_api_key:str
-    openai_model:str="gpt-6-astra"
+    openai_model:str="gpt-6.1-sol"
     spreadsheet_id:str
     history_spreadsheet_id:str=""
     owner_ids:str
@@ -1901,7 +1901,8 @@ async def task_sync(x_shuher_sync_secret: str | None = Header(default=None)):
             x_shuher_sync_secret, settings.telegram_webhook_secret):
         raise HTTPException(403, "Forbidden")
     async with inflight:
-        count = await sync_task_notifications()
+        with request_reads():
+            count = await sync_task_notifications()
     return {"ok": True, "notifications": count}
 
 @app.post("/telegram/webhook")
@@ -1915,15 +1916,16 @@ async def webhook(request:Request,
     if not isinstance(update_id,int):
         raise HTTPException(400,"Invalid update")
     async with inflight:
-        try:
-            if await sheet(store.processed,update_id):
-                return {"ok":True,"duplicate":True}
-            if body.get("callback_query"):
-                await handle_access_callback(body["callback_query"])
-            else:
-                await handle_message(body)
-            await sheet(store.mark_processed,update_id)
-        except Exception:
-            log.exception("Failed to process Telegram update %s",update_id)
-            raise HTTPException(503,"Telegram update not processed")
+        with request_reads():
+            try:
+                if await sheet(store.processed,update_id):
+                    return {"ok":True,"duplicate":True}
+                if body.get("callback_query"):
+                    await handle_access_callback(body["callback_query"])
+                else:
+                    await handle_message(body)
+                await sheet(store.mark_processed,update_id)
+            except Exception:
+                log.exception("Failed to process Telegram update %s",update_id)
+                raise HTTPException(503,"Telegram update not processed")
     return {"ok":True}

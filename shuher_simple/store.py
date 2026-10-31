@@ -9,6 +9,9 @@ import io
 import json
 import re
 import secrets
+from contextlib import contextmanager
+from contextvars import ContextVar
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -45,6 +48,21 @@ def quoted(name):
 def row_values(values,width):
     return (list(values)+[""]*width)[:width]
 
+_request_reads=ContextVar("shuher_sheet_reads",default=None)
+
+@contextmanager
+def request_reads():
+    """Reuse reads only inside one serialized request, including to_thread calls.
+
+    A new request always starts fresh, so edits and revocations in Sheets
+    are visible on the next message. Never share this scope across requests.
+    """
+    token=_request_reads.set({})
+    try:
+        yield
+    finally:
+        _request_reads.reset(token)
+
 class SheetsStore:
     def __init__(self,spreadsheet_id,service_account_json_b64=""):
         if service_account_json_b64:
@@ -56,7 +74,27 @@ class SheetsStore:
         self.id=spreadsheet_id
         self.client=build("sheets","v4",credentials=creds,cache_discovery=False).spreadsheets()
 
+    def _read(self,key,fetch):
+        cache=_request_reads.get()
+        if cache is None:
+            return fetch()
+        key=(self.id,)+key
+        if key not in cache:
+            cache[key]=deepcopy(fetch())
+        return deepcopy(cache[key])
+
+    def _invalidate(self,tab=None):
+        # Invalidate before writes, including writes that time out after commit.
+        cache=_request_reads.get()
+        if cache is not None:
+            for key in list(cache):
+                if key[0]==self.id and (tab is None or key[1:3]==("data",tab)):
+                    del cache[key]
+
     def titles(self):
+        return self._read(("titles",),self._titles)
+
+    def _titles(self):
         result=self.client.get(spreadsheetId=self.id,fields="sheets.properties.title").execute()
         return [s["properties"]["title"] for s in result.get("sheets",[])]
 
@@ -64,6 +102,7 @@ class SheetsStore:
         existing=set(self.titles())
         missing=[x for x in META if x not in existing]
         if missing:
+            self._invalidate()
             requests=[{"addSheet":{"properties":{"title":name,"hidden":True}}} for name in missing]
             self.client.batchUpdate(spreadsheetId=self.id,body={"requests":requests}).execute()
         for name in missing:
@@ -72,17 +111,22 @@ class SheetsStore:
                 valueInputOption="RAW",body={"values":[META[name]]}).execute()
 
     def data(self,tab,limit=4000):
+        return self._read(("data",tab,limit),lambda: self._data(tab,limit))
+
+    def _data(self,tab,limit):
         return self.client.values().get(
             spreadsheetId=self.id,range=quoted(tab)+f"!A1:AZ{limit}",
             valueRenderOption="FORMATTED_VALUE").execute().get("values",[])
 
     def append(self,tab,values):
+        self._invalidate(tab)
         return self.client.values().append(
             spreadsheetId=self.id,range=quoted(tab)+"!A:AZ",
             valueInputOption="RAW",insertDataOption="INSERT_ROWS",
             body={"values":[values]}).execute()
 
     def update(self,tab,row_number,values):
+        self._invalidate(tab)
         self.client.values().update(spreadsheetId=self.id,
             range=quoted(tab)+f"!A{row_number}",valueInputOption="RAW",
             body={"values":[values]}).execute()
@@ -140,6 +184,7 @@ class SheetsStore:
             cleaned.append(c)
         if len(cleaned)<4 or len(cleaned)>35:
             raise ValueError("Потрібно від 1 до 32 різних колонок.")
+        self._invalidate()
         self.client.batchUpdate(spreadsheetId=self.id,body={
             "requests":[{"addSheet":{"properties":{"title":name,"gridProperties":{
                 "frozenRowCount":1}}}}]}).execute()
@@ -197,6 +242,7 @@ class SheetsStore:
         # One targeted update is faster than rewriting the whole access sheet.
         # Update all historical duplicates, if any; last row wins when read.
         if matches:
+            self._invalidate(GRANTS)
             for row_no in matches:
                 self.client.values().update(
                     spreadsheetId=self.id,range=quoted(GRANTS)+f"!A{row_no}:D{row_no}",
@@ -238,6 +284,7 @@ class SheetsStore:
                 row[3]=str(owner)
                 count+=1
         if count:
+            self._invalidate(GRANTS)
             self.client.values().update(
                 spreadsheetId=self.id,
                 range=quoted(GRANTS)+f"!A1:D{len(rows)}",
@@ -383,6 +430,7 @@ class SheetsStore:
         while number:
             number,remainder=divmod(number-1,26)
             column=chr(65+remainder)+column
+        self._invalidate(table)
         self.client.values().update(
             spreadsheetId=self.id,range=quoted(table)+f"!{column}{row_num}",
             valueInputOption="RAW",body={"values":[[new_value]]}).execute()
@@ -416,6 +464,7 @@ class SheetsStore:
         while number:
             number,remainder=divmod(number-1,26)
             column=chr(65+remainder)+column
+        self._invalidate(table)
         self.client.values().update(
             spreadsheetId=self.id,range=quoted(table)+f"!{column}{row_num}",
             valueInputOption="RAW",body={"values":[[new_value]]}).execute()

@@ -1,6 +1,6 @@
 """OpenAI Responses API adapter for Shuher's text, JSON and image prompts.
 
-Chat Completions is retained nowhere in production: GPT-6 Astra reasoning
+Chat Completions is retained nowhere in production: GPT-6.1 Sol reasoning
 and future tool calls should use Responses. We log usage counts, never
 prompts, user IDs, image contents or API secrets.
 """

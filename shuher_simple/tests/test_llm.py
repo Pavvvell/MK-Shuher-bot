@@ -11,7 +11,7 @@ class LLMTests(unittest.IsolatedAsyncioTestCase):
         return SimpleNamespace(
             status=status,
             output_text=text,
-            model="gpt-6-astra",
+            model="gpt-6.1-sol",
             usage=SimpleNamespace(
                 input_tokens=534,
                 output_tokens=85,
@@ -44,15 +44,15 @@ class LLMTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(items[0]["content"][1]["image_url"],
                          "data:image/jpeg;base64,aGVsbG8=")
 
-    async def test_asttra_uses_responses_without_temperature(self):
+    async def test_sol_uses_responses_without_temperature(self):
         client=self.client(self.response())
-        result=await generate(client,"gpt-6-astra",[
+        result=await generate(client,"gpt-6.1-sol",[
             {"role":"system","content":"Ти Шухер"},
             {"role":"user","content":"Привіт"},
         ],max_tokens=800)
         self.assertEqual(result,"Вітаю")
         kwargs=client.responses.create.call_args.kwargs
-        self.assertEqual(kwargs["model"],"gpt-6-astra")
+        self.assertEqual(kwargs["model"],"gpt-6.1-sol")
         self.assertEqual(kwargs["reasoning"],{"effort":"medium"})
         self.assertEqual(kwargs["max_output_tokens"],4000)
         self.assertFalse(kwargs["store"])
@@ -62,7 +62,7 @@ class LLMTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_json_routing_uses_low_reasoning_and_json_format(self):
         client=self.client(self.response('{"intent":"other"}'))
-        result=await generate(client,"gpt-6-astra",[
+        result=await generate(client,"gpt-6.1-sol",[
             {"role":"system","content":"Поверни JSON"},
             {"role":"user","content":"Привіт"},
         ],max_tokens=350,json_mode=True)
@@ -76,14 +76,14 @@ class LLMTests(unittest.IsolatedAsyncioTestCase):
         for response in [self.response(text=""),self.response(status="incomplete")]:
             client=self.client(response)
             with self.assertRaisesRegex(ValueError,"response"):
-                await generate(client,"gpt-6-astra",[
+                await generate(client,"gpt-6.1-sol",[
                     {"role":"user","content":"Hello"},
                 ])
 
     def test_usage_logging_never_logs_content(self):
         response=self.response()
         with self.assertLogs("shuher-lite.usage",level="INFO") as cm:
-            log_usage(response,"gpt-6-astra")
+            log_usage(response,"gpt-6.1-sol")
         self.assertIn("input_tokens=534",cm.output[0])
         self.assertIn("output_tokens=85",cm.output[0])
         self.assertIn("cached_tokens=120",cm.output[0])

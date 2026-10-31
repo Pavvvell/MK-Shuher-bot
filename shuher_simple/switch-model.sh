@@ -1,5 +1,5 @@
 #!/bin/sh
-# Upgrade Shuher's private Cloud Run environment to GPT-6 Astra.
+# Upgrade Shuher's private Cloud Run environment to GPT-6.1 Sol.
 # Do not print, upload or commit deploy.env.yaml (contains secrets).
 set -eu
 cd "$(dirname "$0")"
@@ -14,7 +14,7 @@ from pathlib import Path
 
 path=Path("deploy.env.yaml")
 raw=path.read_text(encoding="utf-8")
-target="gpt-6-astra"
+target="gpt-6.1-sol"
 matches=list(re.finditer(r"(?m)^OPENAI_MODEL:[ \t]*[^\r\n]*$",raw))
 if len(matches)>1:
     raise SystemExit("Duplicate OPENAI_MODEL entries; no changes applied.")
@@ -23,7 +23,7 @@ if matches:
     new_raw=raw[:matches[0].start()]+'OPENAI_MODEL: "'+target+'"'+raw[matches[0].end():]
 else:
     new_raw=raw.rstrip("\n")+'\nOPENAI_MODEL: "'+target+'"\n'
-backup=Path.home()/".shuher-deploy-env-before-astra.yaml"
+backup=Path.home()/".shuher-deploy-env-before-sol61.yaml"
 if raw!=new_raw:
     if not backup.exists():
         backup.write_text(raw,encoding="utf-8")
