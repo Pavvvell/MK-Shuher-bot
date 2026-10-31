@@ -31,11 +31,19 @@ class InvoiceRules(unittest.TestCase):
     def test_user_request_and_common_variants(self):
         for text in ("покажи всі рахунки які я мав кинути на оплату",
                      "Шухер, надішли рахунки до оплати", "дай неоплачені рахунки",
+                     "мені скинь рахунки",
+                     "то скинеш пдф файли і фото з підписом, що куди на оплату?",
+                     "Скинеш мені рахунки?", "Можеш надіслати мені рахунки?",
+                     "Мені надішли оригінали рахунків", "покажи рахунок на оплату",
                      "Які рахунки до оплати?", "/invoices"):
             with self.subTest(text=text):
                 self.assertTrue(is_payable_request(text))
         for text in ("це рахунок на оплату", "рахунок оплачено", "оплати рахунки",
-                     "покажи оплачені рахунки", "покажи накладні"):
+                     "покажи оплачені рахунки", "покажи накладні",
+                     "не скидай мені рахунки", "не треба надсилати рахунки",
+                     "Юрій сказав: скинь рахунки", "надішли Юрію рахунки на оплату",
+                     "напиши Юрію, щоб він надіслав мені рахунки",
+                     "скинеш мені фото?", "я надішлю тобі рахунки"):
             with self.subTest(text=text):
                 self.assertFalse(is_payable_request(text))
 
@@ -146,6 +154,35 @@ class AppDelivery(unittest.IsolatedAsyncioTestCase):
             model.assert_not_awaited()
             fake.get_pending.assert_not_called()
             fake.save_pending.assert_not_called()
+
+    async def test_screenshot_phrases_reach_actual_telegram_document_delivery(self):
+        # Exercise the whole message -> Sheets -> sendDocument path, rather
+        # than mocking the delivery handler as the original routing test did.
+        for text in ("мені скинь рахунки",
+                     "то скинеш пдф файли і фото з підписом, що куди на оплату?"):
+            with self.subTest(text=text):
+                update={"message":{"from":{"id":123},"chat":{"id":123,"type":"private"},
+                                   "text":text}}
+                records=[invoice(ID="SH-"+str(i),**{"Telegram файли":"pdf"+str(i)}) for i in range(3)]
+                headers=list(records[0])
+                fake=MagicMock()
+                fake.register.return_value=False
+                fake.read_table.return_value=(headers,[[row[h] for h in headers] for row in records])
+                fake.users.return_value=[]
+                with patch.object(self.app,"store",fake), \
+                     patch.object(self.app,"bot_call",AsyncMock(return_value={"ok":True})) as telegram, \
+                     patch.object(self.app,"handle_staff_outreach",AsyncMock()) as outreach, \
+                     patch.object(self.app,"ask_model",AsyncMock()) as model:
+                    await self.app.handle_message(update)
+                    files=[call.args[1] for call in telegram.await_args_list if call.args[0]=="sendDocument"]
+                    self.assertEqual([f["document"] for f in files],["pdf0","pdf1","pdf2"])
+                    for f in files:
+                        self.assertEqual(f["caption"],"Катана\nМет обробка (будівництво)\nШакін")
+                    self.assertTrue(all(c.args[1]["chat_id"]==123 for c in telegram.await_args_list))
+                    model.assert_not_awaited()
+                    outreach.assert_not_awaited()
+                    fake.get_pending.assert_not_called()
+                    fake.append_record.assert_not_called()
 
 
 if __name__=="__main__":

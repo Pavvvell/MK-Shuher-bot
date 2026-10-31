@@ -53,7 +53,9 @@ def is_send_request(text):
     value=str(text or "").strip()
     if len(value)>2500 or NEGATION_RE.search(value):
         return False
-    if re.search(r"\b(?:напиши|надішли|відправ|напишеш|надішлеш)\s+мені\b",
+    action=r"(?:напиши|написати|надішли|надіслати|відправ|відправити|напишеш|надішлеш|відправиш|скинь|скинеш|скинути|перешли|перешлеш)"
+    if re.search(r"\b"+action+r"\s+(?:будь ласка[,\s]+)?мені\b|"
+                 r"\bмені\s+(?:(?:будь ласка|ти|можеш|зможеш)\s+)*"+action+r"\b",
                  value,re.IGNORECASE):
         return False  # Asking for a draft for the owner, not a staff DM.
     if re.search(r"\b(?:не|ні|не треба|не потрібно)\s+"

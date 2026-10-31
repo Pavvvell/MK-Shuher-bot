@@ -14,6 +14,13 @@ OWNERS={100000001}
 
 
 class OutreachTests(unittest.TestCase):
+    def test_self_addressed_file_requests_are_not_employee_messages(self):
+        for text in ("мені скинь рахунки", "скинеш мені рахунки?",
+                     "надішли мені файли", "мені можеш надіслати фото?",
+                     "перешли мені рахунки", "скинь мені PDF"):
+            with self.subTest(text=text):
+                self.assertFalse(is_send_request(text))
+
     def test_direct_owner_ask_is_a_command_not_a_draft(self):
         command="напиши їм просто що вони можуть починати працювати і надсилати тобі все що треба"
         self.assertTrue(is_send_request(command))

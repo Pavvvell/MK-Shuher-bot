@@ -12,13 +12,35 @@ def one_line(value, fallback=""):
 
 def is_payable_request(text):
     text=" ".join(str(text or "").casefold().split())
-    if text.split(" ",1)[0] == "/invoices":
+    if text.split(" ",1)[0].split("@",1)[0] == "/invoices":
         return True
-    # Restrict the fast path to explicit reads, not invoice submission/status.
-    return (bool(re.search(r"\bрахунк\w*\b",text)) and
-            bool(re.search(r"\b(?:покажи|показати|дай|надішли|скинь|виведи|перелік|список|які)\b",text)) and
-            (bool(re.search(r"\b(?:до|на) оплат\w*\b",text)) or
-             bool(re.search(r"\bнеоплачен\w*\b",text))))
+    # Read requests may put "мені" before the verb, use future tense, or
+    # refer to the files without repeating "рахунки". Do not require a magic
+    # phrase. Keep named third-party recipients and new submissions out.
+    match=re.match(
+        r"^(?:(?:шухер|ну|то|і|а|тоді|тепер|вже|ти|чи|можеш|зможеш|"
+        r"будь ласка|будь-ласка|мені)[,!?\s]+)*"
+        r"(?:покажи|показати|покажеш|дай|надай|надішли|надіслати|надішлеш|"
+        r"скинь|скинеш|скинути|відправ|відправити|відправиш|перешли|перешлеш|"
+        r"виведи|перелік|список|які)\b\s*(.*)$",text)
+    if not match:
+        return False
+    tail=match[1].strip(" ,:?!")
+    # After the verb, accept only a self-addressed or unaddressed object.
+    # For example, "надішли Юрію рахунки" belongs to the staff workflow.
+    if not re.match(
+        r"(?:(?:мені|будь ласка|будь-ласка|всі|усі|ці|ті|мої|наші|всі ці|усі ці|"
+        r"збережені|будь-які)[,\s]+)*"
+        r"(?:рахун\w*|неоплачен\w*|оригінал\w*|pdf|пдф|файл\w*|фото|"
+        r"документ\w*|скан\w*)\b",tail):
+        return False
+    # A request for paid/cancelled/history records must not return unpaid ones.
+    if re.search(r"\b(?:оплачен\w*|сплачен\w*|скасован\w*|відхилен\w*|історі\w*)\b",tail):
+        return False
+    invoice=bool(re.search(r"\bрахун(?:ок|к\w*)\b",tail))
+    media=bool(re.search(r"\b(?:pdf|пдф|файл\w*|фото|документ\w*|скан\w*)\b",tail))
+    payment=bool(re.search(r"\b(?:до|на) оплат\w*\b",tail))
+    return invoice or (media and payment)
 
 
 def payable_rows(headers, rows):
