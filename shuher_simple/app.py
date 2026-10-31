@@ -861,7 +861,6 @@ async def show_payable_invoices(uid,chat):
     if not invoices:
         await send(chat,"У «Рахунки» немає неоплачених рахунків для перегляду.")
         return
-    users=await sheet(store.users)
     await send(chat,"Рахунків без підтвердженої повної оплати: "+str(len(invoices))+
                ". Надсилаю збережені файли. Записи з неповними даними ще потребують перевірки.")
 
@@ -871,7 +870,7 @@ async def show_payable_invoices(uid,chat):
     delivered=0
     for row in invoices:
         try:
-            await send_invoice(row,chat,users,bot_call,fetch_file)
+            await send_invoice(row,chat,bot_call,fetch_file)
             delivered+=1
         except Exception:
             log.warning("Invoice file delivery failed for %s",row["ID"])

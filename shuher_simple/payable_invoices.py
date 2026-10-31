@@ -66,19 +66,12 @@ def payable_rows(headers, rows):
     return result
 
 
-def invoice_caption(row, users=()):
-    # "Передав Юрій" is a legacy column title, not proof that Yuriy submitted it.
-    author=one_line(row.get("Автор") or row.get("Передав Юрій"))
-    if author.startswith("@") or author.isdigit():
-        matches=[person for person in users if len(person)>2 and
-                 (str(person[0])==author or
-                  (person[1] and ("@"+str(person[1]).lstrip("@")).casefold()==author.casefold()))]
-        if len(matches)==1 and matches[0][2]:
-            author=one_line(matches[0][2])
+def invoice_caption(row):
+    # Owner-requested forwarding signature; the submitter remains in the ledger.
     return "\n".join((
         one_line(row.get("Постачальник"), "Постачальника не вказано"),
         one_line(row.get("Проєкт"), "Проєкт не вказано"),
-        author or "Хто подав — не вказано",
+        "Шакін",
     ))
 
 
@@ -99,9 +92,9 @@ def invoice_files(row):
     return list(dict.fromkeys(zip(ids,kinds)))
 
 
-async def send_invoice(row, chat, users, bot_call, fetch_file):
+async def send_invoice(row, chat, bot_call, fetch_file):
     """Keep PDFs as documents and photographs as photos, each with the caption."""
-    caption=invoice_caption(row,users)
+    caption=invoice_caption(row)
     documents=[]
     photos=[]
     for fid,kind in invoice_files(row):

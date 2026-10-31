@@ -59,12 +59,15 @@ class InvoiceRules(unittest.TestCase):
 
     def test_exact_three_line_caption_and_unknowns(self):
         self.assertEqual(invoice_caption(invoice()),"Катана\nМет обробка (будівництво)\nШакін")
-        text=invoice_caption(invoice(**{"Постачальник":"**Катана**\nТОВ", "Автор":"@buyer"}),
-                             [["123","buyer","Юрій Остапенко","",""]])
-        self.assertEqual(text,"Катана ТОВ\nМет обробка (будівництво)\nЮрій Остапенко")
+        text=invoice_caption(invoice(**{"Постачальник":"**Катана**\nТОВ", "Автор":"@buyer"}))
+        self.assertEqual(text,"Катана ТОВ\nМет обробка (будівництво)\nШакін")
         self.assertEqual(invoice_caption({}).splitlines(),
-                         ["Постачальника не вказано","Проєкт не вказано","Хто подав — не вказано"])
-        self.assertEqual(invoice_caption(invoice(**{"Автор":"@unknown"})).splitlines()[2],"@unknown")
+                         ["Постачальника не вказано","Проєкт не вказано","Шакін"])
+        for author in ("@unknown","Yuriy","Юрій Остапенко",""):
+            self.assertEqual(invoice_caption(invoice(**{"Автор":author})).splitlines()[2],"Шакін")
+        row=invoice(**{"Постачальник":"Інший постачальник", "Проєкт":"Інший проєкт", "Автор":"Yuriy"})
+        self.assertEqual(invoice_caption(row),"Інший постачальник\nІнший проєкт\nШакін")
+        self.assertEqual(row["Автор"],"Yuriy")
 
     def test_missing_file_and_external_url_not_fetched(self):
         for value in ("", "https://example.com/invoice.pdf"):
@@ -75,7 +78,7 @@ class InvoiceRules(unittest.TestCase):
 class FileDelivery(unittest.IsolatedAsyncioTestCase):
     async def test_pdf_original_reused_with_caption_only_to_requesting_chat(self):
         call,fetch=AsyncMock(),AsyncMock()
-        count=await send_invoice(invoice(),123,[],call,fetch)
+        count=await send_invoice(invoice(),123,call,fetch)
         self.assertEqual(count,1)
         fetch.assert_not_awaited()
         call.assert_awaited_once_with("sendDocument",{
@@ -87,7 +90,7 @@ class FileDelivery(unittest.IsolatedAsyncioTestCase):
         for rid in ("SH-A","SH-B"):
             row=invoice(ID=rid,**{"Telegram файли":"photo1, photo2",
                                  "Документ / посилання":"Окремі фото: 1, 2"})
-            await send_invoice(row,123,[],call,fetch)
+            await send_invoice(row,123,call,fetch)
         self.assertEqual(call.await_count,4)
         for sent in call.await_args_list:
             self.assertEqual(sent.args[0],"sendPhoto")
@@ -98,12 +101,12 @@ class FileDelivery(unittest.IsolatedAsyncioTestCase):
 
     async def test_unknown_legacy_pdf_and_bad_photo(self):
         call,fetch=AsyncMock(),AsyncMock(return_value=b"%PDF-test")
-        await send_invoice(invoice(**{"Документ / посилання":""}),123,[],call,fetch)
+        await send_invoice(invoice(**{"Документ / посилання":""}),123,call,fetch)
         self.assertEqual(call.await_args.args[1]["document"],"pdf1")
         call.reset_mock()
         fetch.return_value=b"invalid-image"
         with self.assertRaises((ValueError,OSError)):
-            await send_invoice(invoice(**{"Документ / посилання":""}),123,[],call,fetch)
+            await send_invoice(invoice(**{"Документ / посилання":""}),123,call,fetch)
         call.assert_not_awaited()
 
     async def test_natural_owner_only(self):
@@ -133,12 +136,11 @@ class AppDelivery(unittest.IsolatedAsyncioTestCase):
         headers=list(records[0])
         fake=MagicMock()
         fake.read_table.return_value=(headers,[[r[h] for h in headers] for r in records])
-        fake.users.return_value=[]
         with patch.object(self.app,"store",fake), patch.object(self.app,"send",AsyncMock()) as send, \
              patch.object(self.app,"send_invoice",AsyncMock(side_effect=[ValueError("missing"),1])) as deliver:
             await self.app.show_payable_invoices(123,123)
             self.assertEqual(deliver.await_count,2)
-            self.assertEqual([c[0] for c in fake.mock_calls],["read_table","users"])
+            self.assertEqual([c[0] for c in fake.mock_calls],["read_table"])
             self.assertIn("1 із 2",send.await_args.args[1])
 
     async def test_request_bypasses_pending_drafts_and_model(self):
@@ -168,7 +170,6 @@ class AppDelivery(unittest.IsolatedAsyncioTestCase):
                 fake=MagicMock()
                 fake.register.return_value=False
                 fake.read_table.return_value=(headers,[[row[h] for h in headers] for row in records])
-                fake.users.return_value=[]
                 with patch.object(self.app,"store",fake), \
                      patch.object(self.app,"bot_call",AsyncMock(return_value={"ok":True})) as telegram, \
                      patch.object(self.app,"handle_staff_outreach",AsyncMock()) as outreach, \
