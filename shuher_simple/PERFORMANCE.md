@@ -12,7 +12,7 @@ Validation: 121 offline unit tests and 95 simulated handler scenarios. The simul
 
 Different users can wait for OpenAI and Telegram concurrently; messages and callbacks from the same user run in arrival order. In-flight duplicate update IDs have their own lock and are checked against the persisted processed-update register before execution. Idle lock entries are removed.
 
-Cloud Run concurrency and Telegram webhook max_connections are 4. Keep max instances at 1 and Uvicorn workers at 1: this is a single-process design, not a distributed queue. Sheets remains the persistent store; unacknowledged Telegram updates are retried on failure/restart. External message delivery is not guaranteed exactly once across crashes.
+Cloud Run concurrency and Telegram webhook max_connections are 4. Memory is 1 GiB to accommodate concurrent photo requests. Keep max instances at 1 and Uvicorn workers at 1: this is a single-process design, not a distributed queue. Sheets remains the persistent store; unacknowledged Telegram updates are retried on failure/restart. External message delivery is not guaranteed exactly once across crashes.
 
 All Sheets calls use one dedicated worker thread. Complete stock check-and-write and linked procurement operations stay serialized; model and Telegram waits do not occupy that worker. Cache generations invalidate data in other active requests after bot writes. Permissions are rechecked in the same worker operation as confirmed writes. Manual edits made outside the bot are refreshed on the next request, as before. Task notification scans have a separate lock; PDF conversion has its own bounded worker.
 
