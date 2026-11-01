@@ -1105,7 +1105,7 @@ async def handle_staff_outreach(uid,chat,text):
     return True
 
 
-async def handle_natural(uid,chat,person,text):
+async def handle_natural(uid,chat,person,text,read_only=False):
     """Classify normal messages; only explicit operations trigger confirmations."""
     access=await sheet(permission,uid)
     if not access:
@@ -1113,19 +1113,21 @@ async def handle_natural(uid,chat,person,text):
     project_match=re.match(
         r"^(?:додай|створи|зареєструй|хочу додати|потрібен)\s+"
         r"(?:новий\s+)?проєкт\s+(.+)$",text,re.IGNORECASE)
-    if project_match:
+    if project_match and not read_only:
         await stage_project_request(uid,chat,person,project_match.group(1))
         return True
-    if is_receipt_pdf_request(text):
+    if is_receipt_pdf_request(text) and not read_only:
         await stage_receipt_pdf(uid,chat,text)
         return True
-    if text_mentions_invoice(text):
+    if text_mentions_invoice(text) and not read_only:
         await stage_invoice(uid,chat,person,text)
         return True
     state=await sheet(store.get_dialogue,uid)
     action=await interpret_natural(text,access,uid in owners,ask_model,
                                    history_excerpt(state))
     intent=action["intent"]
+    if read_only and intent not in ("overview","today","balance","history","read","payable_invoices"):
+        return False
     if intent=="other":
         return False
     if intent=="overview":
@@ -1873,6 +1875,8 @@ async def handle_message(update):
                 await stage_receipt_pdf(uid,chat,text)
             elif text_mentions_invoice(text):
                 await stage_invoice(uid,chat,person,text)
+            elif await handle_natural(uid,chat,person,text,read_only=True):
+                pass
             elif state["photos"]:
                 await chat_answer(uid,chat,text)
             else:

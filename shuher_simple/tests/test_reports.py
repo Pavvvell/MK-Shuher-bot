@@ -73,6 +73,22 @@ class ReportRegression(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Google Sheets', answer)
         self.model.assert_not_awaited()
 
+    async def test_model_read_intents_escape_old_photo_context_without_submitting_media(self):
+        state, _ = queue_photo(new_dialogue(), 'old_photo', '', '', 'image/jpeg')
+        self.store.save_dialogue(123, state)
+        for text, action, expected in (
+            ('скільки болтів є на складі?', {'intent': 'balance', 'target': 'болти'}, '100'),
+            ('Як просуваються наші роботи?', {'intent': 'overview'}, 'Google Sheets'),
+        ):
+            with self.subTest(text=text):
+                self.model.side_effect = None
+                self.model.return_value = __import__('json').dumps(action)
+                self.sent.clear()
+                answer = await self.message(text)
+                self.assertIn(expected, answer)
+                self.assertEqual(self.store.get_dialogue(123)['photos'], state['photos'])
+                self.assertIsNone(self.store.get_pending(123))
+
     async def test_write_only_user_cannot_read_reports(self):
         self.store.client.data['_Shuher_Access'] = [self.store.client.data['_Shuher_Access'][0],
                                                    ['456', 'Заявки', 'write_only', '123']]
@@ -106,6 +122,11 @@ class ReportRules(unittest.TestCase):
                      'як зробити блок живлення?', 'заявку виконали', 'що раніше купували?'):
             with self.subTest(text=text):
                 self.assertFalse(is_report_request(text))
+
+    def test_specific_and_daily_queries_keep_existing_read_routes(self):
+        from reports import is_report_request
+        self.assertFalse(is_report_request('що сьогодні у закупці?'))
+        self.assertFalse(is_report_request('скільки заявок на болти?'))
 
     def test_explicit_blockers_deadlines_and_unknowns(self):
         from reports import build_report
