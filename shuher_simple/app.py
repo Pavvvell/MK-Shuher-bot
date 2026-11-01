@@ -28,13 +28,14 @@ from access_ui import (button as access_button, keyboard as access_keyboard,
                        list_view, user_view, CODE_MODE, MODE_LABEL,
                        can_read, can_write)
 from projects import (canonical_project, approved_projects, select_project_message,
-                      select_project_answer, requested_new_project, approve_new_project,
+                      select_project_answer, requested_new_project, decide_project,
                       explicit_project_in_message, unique_explicit_project)
 from media import (MAX_PHOTO_BYTES, telegram_file_bytes, transcribe_telegram_voice)
 from natural import interpret_natural, status_candidates, status_selection_text
 from outreach import is_send_request, delivery_plan, choose_recipients, MAX_RECIPIENTS
 from task_notifications import plain_telegram_text, task_fields, authorized_recipient, task_marker, task_notice
 from llm import generate
+from concurrency import KeyedQueues, SheetsWorker, user_queue_key
 
 logging.basicConfig(level=logging.INFO)
 log=logging.getLogger("shuher-lite")
@@ -63,10 +64,26 @@ history_store=(SheetsStore(settings.history_spreadsheet_id,
                if settings.history_spreadsheet_id else None)
 openai=AsyncOpenAI(api_key=settings.openai_api_key,timeout=90,max_retries=1)
 telegram_api=f"https://api.telegram.org/bot{settings.telegram_bot_token}"
-inflight=asyncio.Lock()
+queues=KeyedQueues()
+sheet_worker=SheetsWorker()
+pdf_worker=SheetsWorker("shuher-pdf")
 
 async def sheet(method,*args):
-    return await asyncio.to_thread(method,*args)
+    return await sheet_worker.run(method,*args)
+
+async def write_as(uid,table,method,*args,require_read=False):
+    """Recheck permission and commit in the same serialized Sheets operation."""
+    def commit():
+        access=permission(uid)
+        if table is None:
+            allowed=bool(access)
+        else:
+            mode=access.get(table)
+            allowed=can_write(mode) and (not require_read or can_read(mode))
+        if not allowed:
+            raise ValueError("Доступ відкликано або недостатньо прав. Запис не виконано.")
+        return method(*args)
+    return await sheet(commit)
 
 async def bot_call(method,payload=None,files=None):
     async with httpx.AsyncClient(timeout=45) as client:
@@ -371,7 +388,11 @@ async def stage_append(uid,chat,person,table,text):
 
 
 async def sync_task_notifications():
-    """Send new/changed task notices to authorized registered assignees."""
+    """Serialize notification scans without blocking unrelated user requests."""
+    async with queues.hold(("task-notifications",)):
+        return await _sync_task_notifications()
+
+async def _sync_task_notifications():
     headers, rows = await sheet(store.read_table, "Доручення")
     users = await sheet(store.users)
     grants = await sheet(store.data, "_Shuher_Access")
@@ -608,7 +629,7 @@ async def commit_purchase_bundle(uid,chat,person,payload):
                 "Передав Юрій":author,
                 "Джерело":"Telegram · пакет "+payload["bundle_id"],
             }
-            created,_=await sheet(store.append_workflow,"Рахунки",
+            created,_=await write_as(uid,"Рахунки",store.append_workflow,"Рахунки",
                                   values,record_id,author)
         else:
             pay=[photos[i-1]["file_id"] for i in entry["images"]
@@ -626,7 +647,7 @@ async def commit_purchase_bundle(uid,chat,person,payload):
                 "Коментар":entry["note"],
                 "Група документів":payload["bundle_id"],
             }
-            created,_=await sheet(store.append_workflow,"Покупки карткою",
+            created,_=await write_as(uid,"Покупки карткою",store.append_workflow,"Покупки карткою",
                                   values,record_id,author)
         outcomes.append((entry,record_id,created))
     await sheet(store.clear_pending,uid)
@@ -818,7 +839,7 @@ async def stage_receipt_pdf(uid,chat,project_hint):
         raw=await telegram_file_bytes(bot_call,settings.telegram_bot_token,
                                       item["file_id"],MAX_PHOTO_BYTES)
         images.append(raw)
-    pdf=await asyncio.to_thread(photos_to_pdf,images)
+    pdf=await pdf_worker.run(photos_to_pdf,images)
     filename="nakladni_"+re.sub(r"[^\w-]+","_",explicit)[:45]+".pdf"
     await bot_call("sendDocument",{
         "chat_id":chat,
@@ -1733,7 +1754,7 @@ async def handle_message(update):
                 if not await sheet(permission,uid):
                     await send(chat,"Доступ відкликано. Запит не надіслано.")
                     return
-                created=await sheet(store.append_project_request,
+                created=await write_as(uid,None,store.append_project_request,
                                     payload["record_id"],payload["name"],
                                     user_label(person),payload.get("reason",""))
                 await sheet(store.clear_pending,uid)
@@ -1749,18 +1770,13 @@ async def handle_message(update):
                     await send(chat,"Рішення щодо нових проєктів приймає тільки власник.")
                     return
                 rid=payload["record_id"]
-                if payload["kind"]=="project_approve":
-                    result,name=await sheet(approve_new_project,store,rid,user_label(person))
-                    await sheet(store.update_field,"Запити на проєкти",rid,
-                                "Дата рішення",datetime.now(KYIV).strftime("%d.%m.%Y %H:%M"))
-                    await sheet(store.clear_pending,uid)
+                approved=payload["kind"]=="project_approve"
+                result,name=await sheet(decide_project,store,rid,user_label(person),
+                    approved,datetime.now(KYIV).strftime("%d.%m.%Y %H:%M"))
+                await sheet(store.clear_pending,uid)
+                if approved:
                     await send(chat,"Проєкт «"+name+"» погоджено й додано до довідника.")
                 else:
-                    await sheet(store.update_field,"Запити на проєкти",rid,"Статус","Відхилено")
-                    await sheet(store.update_field,"Запити на проєкти",rid,"Погодив",user_label(person))
-                    await sheet(store.update_field,"Запити на проєкти",rid,"Дата рішення",
-                                datetime.now(KYIV).strftime("%d.%m.%Y %H:%M"))
-                    await sheet(store.clear_pending,uid)
                     await send(chat,"Запит на новий проєкт відхилено.")
                 return
             table,mode=await sheet(choose,uid,pending["table"])
@@ -1769,8 +1785,8 @@ async def handle_message(update):
                 await send(chat,"Потрібне право запису (а для зміни статусу — ще й читання). /cancel")
                 return
             if payload.get("kind")=="status":
-                changed=await sheet(store.update_status,table,payload["record_id"],
-                                    payload["field"],payload["value"],payload["expected_old"])
+                changed=await write_as(uid,table,store.update_status,table,payload["record_id"],
+                                    payload["field"],payload["value"],payload["expected_old"],require_read=True)
                 await sheet(store.clear_pending,uid)
                 if changed and table=="Доручення":
                     await sync_task_notifications()
@@ -1778,7 +1794,7 @@ async def handle_message(update):
                                  ": "+payload["field"]+" → "+payload["value"])
                            if changed else "Цей статус уже встановлено.")
                 return
-            added,linked=await sheet(store.append_workflow,table,payload["values"],
+            added,linked=await write_as(uid,table,store.append_workflow,table,payload["values"],
                                     payload["record_id"],user_label(person))
             await sheet(store.clear_pending,uid)
             if table=="Рахунки" and added:
@@ -1884,15 +1900,21 @@ async def lifespan(app:FastAPI):
             "url":settings.public_base_url.rstrip("/")+"/telegram/webhook",
             "secret_token":settings.telegram_webhook_secret,
             "allowed_updates":["message","callback_query"],
-            "drop_pending_updates":False})
+            "drop_pending_updates":False,
+            "max_connections":4})
         log.info("Registered Telegram webhook: %s",result.get("ok"))
-    yield
+    try:
+        yield
+    finally:
+        await asyncio.to_thread(sheet_worker.close)
+        await asyncio.to_thread(pdf_worker.close)
 
 app=FastAPI(lifespan=lifespan)
 
 @app.get("/health")
 async def health():
-    return {"status":"ok","backend":"google-sheets","model":settings.openai_model}
+    return {"status":"ok","backend":"google-sheets","model":settings.openai_model,
+            "queue":"per-user","parallel_requests":4}
 
 @app.post("/tasks/sync")
 async def task_sync(x_shuher_sync_secret: str | None = Header(default=None)):
@@ -1900,9 +1922,8 @@ async def task_sync(x_shuher_sync_secret: str | None = Header(default=None)):
     if not x_shuher_sync_secret or not secrets.compare_digest(
             x_shuher_sync_secret, settings.telegram_webhook_secret):
         raise HTTPException(403, "Forbidden")
-    async with inflight:
-        with request_reads():
-            count = await sync_task_notifications()
+    with request_reads():
+        count = await sync_task_notifications()
     return {"ok": True, "notifications": count}
 
 @app.post("/telegram/webhook")
@@ -1915,7 +1936,7 @@ async def webhook(request:Request,
     update_id=body.get("update_id")
     if not isinstance(update_id,int):
         raise HTTPException(400,"Invalid update")
-    async with inflight:
+    async with queues.hold(("update",update_id)), queues.hold(user_queue_key(body)):
         with request_reads():
             try:
                 if await sheet(store.processed,update_id):

@@ -120,3 +120,22 @@ def approve_new_project(store,record_id,owner):
         raise ValueError("Проєкт додано, але статус запиту не оновлено. "
                          "Перевір «Проєкти» перед повторною дією.")
     return created,name
+
+
+def decide_project(store,record_id,owner,approve,decision_time):
+    """Run the complete owner decision in one serialized Sheets operation."""
+    if approve:
+        created,name=approve_new_project(store,record_id,owner)
+        store.update_field("Запити на проєкти",record_id,"Дата рішення",decision_time)
+        return created,name
+    headers,_,row=store._lookup("Запити на проєкти",record_id)
+    fields=dict(zip(headers,row))
+    status=fields.get("Статус","")
+    if status=="Відхилено":
+        return False,fields.get("Назва проєкту","")
+    if status!="Очікує погодження":
+        raise ValueError("Рішення щодо цього запиту вже змінилося. Перевір його статус.")
+    store.update_field("Запити на проєкти",record_id,"Статус","Відхилено")
+    store.update_field("Запити на проєкти",record_id,"Погодив",owner)
+    store.update_field("Запити на проєкти",record_id,"Дата рішення",decision_time)
+    return True,fields.get("Назва проєкту","")

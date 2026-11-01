@@ -49,10 +49,11 @@ def row_values(values,width):
     return (list(values)+[""]*width)[:width]
 
 _request_reads=ContextVar("shuher_sheet_reads",default=None)
+_read_versions={}
 
 @contextmanager
 def request_reads():
-    """Reuse reads only inside one serialized request, including to_thread calls.
+    """Reuse reads inside one request; observe writes from other requests.
 
     A new request always starts fresh, so edits and revocations in Sheets
     are visible on the next message. Never share this scope across requests.
@@ -79,11 +80,18 @@ class SheetsStore:
         if cache is None:
             return fetch()
         key=(self.id,)+key
-        if key not in cache:
-            cache[key]=deepcopy(fetch())
-        return deepcopy(cache[key])
+        tab=key[2] if key[1]=="data" else None
+        version=(_read_versions.get((self.id,None),0),
+                 _read_versions.get((self.id,tab),0))
+        if key not in cache or cache[key][0]!=version:
+            cache[key]=(version,deepcopy(fetch()))
+        return deepcopy(cache[key][1])
 
     def _invalidate(self,tab=None):
+        # All access runs on the single Sheets worker. Other active request
+        # caches observe this generation on their next read of the same tab.
+        version_key=(self.id,tab)
+        _read_versions[version_key]=_read_versions.get(version_key,0)+1
         # Invalidate before writes, including writes that time out after commit.
         cache=_request_reads.get()
         if cache is not None:
