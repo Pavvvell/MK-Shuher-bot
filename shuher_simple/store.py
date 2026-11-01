@@ -123,7 +123,7 @@ class SheetsStore:
 
     def _data(self,tab,limit):
         return self.client.values().get(
-            spreadsheetId=self.id,range=quoted(tab)+f"!A1:AZ{limit}",
+            spreadsheetId=self.id,range=quoted(tab)+f"!A1:AZ{limit if limit is not None else ''}",
             valueRenderOption="FORMATTED_VALUE").execute().get("values",[])
 
     def append(self,tab,values):
@@ -379,10 +379,10 @@ class SheetsStore:
     def mark_processed(self,update_id):
         self.append(UPDATES,[str(update_id),now()])
 
-    def read_table(self,table):
+    def read_table(self,table,limit=4000):
         resolved=self.resolve(table)
         if not resolved:raise ValueError("Таблиці не знайдено.")
-        rows=self.data(resolved)
+        rows=self.data(resolved,limit)
         if not rows:return [],[]
         return rows[0],rows[1:]
 

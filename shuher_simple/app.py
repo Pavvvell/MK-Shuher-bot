@@ -36,6 +36,7 @@ from outreach import is_send_request, delivery_plan, choose_recipients, MAX_RECI
 from task_notifications import plain_telegram_text, task_fields, authorized_recipient, task_marker, task_notice
 from llm import generate
 from concurrency import KeyedQueues, SheetsWorker, user_queue_key
+from reports import is_report_request, build_report
 
 logging.basicConfig(level=logging.INFO)
 log=logging.getLogger("shuher-lite")
@@ -214,6 +215,12 @@ async def read_answer(uid,table,question):
     return answer[:3300]
 
 
+async def show_live_report(uid,chat,text):
+    def read():
+        return build_report(store,permission(uid),text)
+    await send(chat,await sheet(read))
+
+
 CHAT_SYSTEM=(
     "Ти Шухер — універсальний українськомовний помічник підприємства. "
     "Спілкуйся вільно, як звичайний ChatGPT: відповідай на загальні питання, "
@@ -234,6 +241,10 @@ CHAT_SYSTEM=(
     "Не відповідай лише чернеткою, якщо власник попросив саме надіслати. "
     "Не стверджуй, що ти надіслав повідомлення, якщо сервер не підтвердив доставку. "
     "Не обіцяй написати потім або 'коли будуть онлайн': відкладених розсилок немає."
+    " Поточний стан заявок, закупівель, доручень і блокерів сервер читає з Google Sheets "
+    "через /summary або запит «як у нас справи?». Не підміняй живий звіт переказом переписки. "
+    "Якщо для поточного запитання рядки не передані, запропонуй /summary; "
+    "не стверджуй, що бот узагалі не має доступу до таблиць."
     " PDF і фото рахунків зберігаються в Telegram; колонка «Telegram файли» "
     "містить ідентифікатори для їх повторного надсилання сервером. "
     "Не заявляй, що файлів немає чи що бот не може їх надіслати через формат ідентифікаторів. "
@@ -1117,6 +1128,9 @@ async def handle_natural(uid,chat,person,text):
     intent=action["intent"]
     if intent=="other":
         return False
+    if intent=="overview":
+        await show_live_report(uid,chat,text)
+        return True
     if intent=="today":
         headers,rows=await sheet(store.read_table,"Закупка")
         date=datetime.now(KYIV).strftime("%d.%m.%Y")
@@ -1274,6 +1288,10 @@ async def handle_command(uid,chat,person,text):
     arg=arg.strip()
     owner=uid in owners
 
+    if cmd=="/summary":
+        await show_live_report(uid,chat,arg)
+        return
+
     if cmd in ("/start","/help"):
         if cmd=="/start":
             try:
@@ -1293,7 +1311,7 @@ async def handle_command(uid,chat,person,text):
                "/analyze — розібрати надіслані фото; /history — пошук у старих записах; /cancel — скасувати чернетку; "
                "/tables — розділи; /projects — проєкти; /projectrequest — новий проєкт; /invoice — рахунок; /receiptpdf — фото в PDF; /id — твій ID; "
                "/use Назва — вибрати таблицю для /add або /ask; "
-               "/export — скачати таблицю.")
+               "/export — скачати таблицю; /summary — стан справ, заявки та блокери з таблиць.")
         if owner:
             intro+=("\n\nКерування лише для власника:\n"
                     "/users — усі користувачі й керування доступами кнопками\n"
@@ -1601,6 +1619,9 @@ async def handle_message(update):
         # An explicit read must not submit queued media or consume a pending draft.
         if is_payable_request(text):
             await show_payable_invoices(uid,chat)
+            return
+        if is_report_request(text):
+            await show_live_report(uid,chat,text)
             return
         # Owner's direct Telegram-message instruction takes priority over
         # pending photo analysis and unrelated Google Sheets drafts.
