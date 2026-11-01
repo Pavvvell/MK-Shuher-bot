@@ -433,6 +433,44 @@ async def _sync_task_notifications():
     return count
 
 
+def append_checked_task(values,record_id,author):
+    """Validate the current assignee inside the serialized write operation."""
+    target=authorized_recipient(values.get("Виконавець"),store.users(),
+                                store.data("_Shuher_Access"))
+    if target is None:
+        raise ValueError("Виконавець не має права читання «Доручень» або не визначений однозначно. "
+                         "Запис не виконано. Перевір доступ чи скасуй чернетку через /cancel.")
+    return store.append_workflow("Доручення",values,record_id,author)
+
+
+def task_delivery_status(record_id):
+    headers,_,row=store._lookup("Доручення",record_id)
+    fields=task_fields(headers,row)
+    target=authorized_recipient(fields.get("Виконавець"),store.users(),
+                                store.data("_Shuher_Access"))
+    if target is None:
+        return "⚠️ Повідомлення виконавцю не доставлено: перевір його реєстрацію та право читання «Доручень»."
+    if task_marker(record_id,fields,target[0]) in store.task_notification_markers():
+        return "✅ Telegram прийняв повідомлення для "+fields["Виконавець"]+". Це не підтверджує прочитання."
+    return "⚠️ Доручення записано, але повідомлення виконавцю не доставлено. Повторити надсилання: /tasksync."
+
+
+def undelivered_task_count():
+    headers,rows=store.read_table("Доручення")
+    users,grants=store.users(),store.data("_Shuher_Access")
+    processed=store.task_notification_markers()
+    count=0
+    for row in rows:
+        fields=task_fields(headers,row)
+        rid=fields.get("ID")
+        if not rid or not fields.get("Завдання"):
+            continue
+        target=authorized_recipient(fields.get("Виконавець"),users,grants)
+        if target is None or task_marker(rid,fields,target[0]) not in processed:
+            count+=1
+    return count
+
+
 async def notify_procurement(created_by,record_id,values):
     """Share confirmed requests with authorized purchasers and flag searches."""
     project=values.get("Проєкт","")
@@ -1002,20 +1040,28 @@ async def stage_owner_task_order(uid,chat,person,text):
     if uid not in owners:
         return False
     lowered = text.casefold()
+    if re.search(r"\bне\s+(?:(?:треба|потрібно)\s+)?(?:доручи|доручити|став|постав|створи|запиши|напиши|повідом|передай)\b",lowered):
+        return False
     explicit_task = bool(re.search(
-        r"\b(?:доручи|доручити|постав.{0,15}завдання|запиши.{0,20}доручення)\b",
+        r"\b(?:доручи|доручити|(?:постав|поставити|створи|запиши)\s+"
+        r"(?:\w+\s+){0,2}(?:завдання|задачу|доручення))\b",
         lowered))
-    future_action = bool(re.search(
+    future_action = is_send_request(text) and bool(re.search(
         r"(?:напиши|написав|повідом|передай).{0,95}(?:щоб|коли|після)|"
         r"(?:треба|потрібно).{0,25}щоб.{0,25}(?:написав|повідомив)",
         lowered))
     if not (explicit_task or future_action):
         return False
+    if await sheet(store.get_pending,uid):
+        raise ValueError("Є незавершена чернетка. Підтверди її «так», скасуй «ні» або /cancel, "
+                         "потім надішли нове доручення. Попередню чернетку збережено.")
     users = await sheet(store.users)
     state = await sheet(store.get_dialogue,uid)
     recipients = choose_recipients(text,state["history"],users)
-    if not recipients or len(recipients) != 1:
-        return False
+    if not recipients:
+        raise ValueError("Не визначив виконавця. Назви зареєстрованого працівника, наприклад «доручи Юрію…».")
+    if len(recipients) != 1:
+        raise ValueError("Для запису доручення вкажи одного виконавця. Для кількох людей надішли окремі доручення.")
     assigned = recipients[0]
     grants = await sheet(store.data,"_Shuher_Access")
     assignee = str(assigned[2] or assigned[1])
@@ -1033,11 +1079,13 @@ async def stage_owner_task_order(uid,chat,person,text):
         extracted = json.loads(await ask_model(
             [{"role":"system","content":"Формуй точний короткий робочий запис українською."},
              {"role":"user","content":prompt}],max_tokens=350,json_mode=True))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return False
+    except (TypeError, ValueError):
+        raise ValueError("Не вдалося розібрати доручення. Повтори: кому і що потрібно зробити. Нічого не записано.")
+    if not isinstance(extracted,dict):
+        raise ValueError("Не вдалося розібрати доручення. Повтори: кому і що потрібно зробити. Нічого не записано.")
     task = str(extracted.get("Завдання") or "").strip()
     if len(task) < 12:
-        return False
+        raise ValueError("Уточни, що саме має зробити виконавець. Доручення ще не записано й не надіслано.")
     values = {
         "Виконавець":assignee,
         "Завдання":task[:1200],
@@ -1048,8 +1096,9 @@ async def stage_owner_task_order(uid,chat,person,text):
     }
     record_id="SH-"+datetime.now(KYIV).strftime("%Y%m%d%H%M")+"-"+secrets.token_hex(3).upper()
     await sheet(store.save_pending,uid,"Доручення",{"record_id":record_id,"values":values})
-    await send(chat, "Підготував доручення для "+assignee+":\\n"+task+
+    await send(chat, "Підготував доручення для "+assignee+":\n"+task+
                "\nПроєкт: "+(values["Проєкт"] or "не зазначено")+
+               "\nДедлайн: "+(values["Дедлайн"] or "не зазначено")+
                "\n\nЗаписати в «Доручення» й повідомити виконавця? "
                "Підтверди текстом «так» або «ні».")
     return True
@@ -1292,6 +1341,17 @@ async def handle_command(uid,chat,person,text):
 
     if cmd=="/summary":
         await show_live_report(uid,chat,arg)
+        return
+    if cmd=="/tasksync":
+        if not owner:
+            await send(chat,"Повторне надсилання доручень доступне тільки власнику.")
+            return
+        count=await sync_task_notifications()
+        remaining=await sheet(undelivered_task_count)
+        await send(chat,f"Telegram прийняв сповіщень про доручення: {count}. "
+                        "Раніше надіслані версії повторно не відправляю.\n"+
+                        (f"⚠️ Без підтвердження доставки залишилось: {remaining}. Перевір доступ виконавців або повтори /tasksync пізніше."
+                         if remaining else "Усі поточні сповіщення прийняті Telegram."))
         return
 
     if cmd in ("/start","/help"):
@@ -1816,9 +1876,15 @@ async def handle_message(update):
                 await send(chat,("Статус оновлено. ID "+payload["record_id"]+
                                  ": "+payload["field"]+" → "+payload["value"])
                            if changed else "Цей статус уже встановлено.")
+                if table=="Доручення":
+                    await send(chat,await sheet(task_delivery_status,payload["record_id"]))
                 return
-            added,linked=await write_as(uid,table,store.append_workflow,table,payload["values"],
-                                    payload["record_id"],user_label(person))
+            if table=="Доручення":
+                added,linked=await write_as(uid,table,append_checked_task,payload["values"],
+                                           payload["record_id"],user_label(person))
+            else:
+                added,linked=await write_as(uid,table,store.append_workflow,table,payload["values"],
+                                           payload["record_id"],user_label(person))
             await sheet(store.clear_pending,uid)
             if table=="Рахунки" and added:
                 try:
@@ -1832,8 +1898,11 @@ async def handle_message(update):
                            "» і передано власнику на перевірку. "
                            "Бухгалтерії не відправлено.")
                 return
-            if table=="Доручення" and added:
+            if table=="Доручення":
                 await sync_task_notifications()
+                await send(chat,("Доручення записано. ID " if added else "Доручення вже записано. ID ")+
+                           payload["record_id"]+"\n"+await sheet(task_delivery_status,payload["record_id"]))
+                return
             if table=="Заявки":
                 await send(chat,"Заявка "+payload["record_id"]+
                            " записана й автоматично пов'язана із закупівлею ZK-"+
