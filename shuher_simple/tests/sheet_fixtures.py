@@ -49,7 +49,7 @@ class API:
             EVENTS.append({'stage':'sheets','op':'batchUpdate','range':'batch'})
             for r in kw['body'].get('requests',[]):
                 if 'addSheet' in r:self.data[r['addSheet']['properties']['title']]=[]
-            for r in kw['body'].get('data',[]):self.update(**r).execute()
+            for r in kw['body'].get('data',[]):self.update(range=r['range'],body={'values':r['values']}).execute()
             return {}
         return Req(go)
 

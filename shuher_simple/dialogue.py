@@ -4,13 +4,15 @@ Do not store photos as bytes in Sheets: keep only Telegram file IDs until the
 next text/voice question. Conversational history is a short, text-only summary
 of the last exchange, scoped to the user's own Telegram ID.
 """
+import json
+
 MAX_PHOTOS = 6
 MAX_HISTORY = 12
 MAX_HISTORY_CHARS = 10500
 
 
 def new_dialogue():
-    return {"history": [], "photos": [], "documents": [], "notes": ""}
+    return {"history": [], "photos": [], "documents": [], "notes": "", "turns": []}
 
 
 def normalize_dialogue(raw):
@@ -50,6 +52,26 @@ def normalize_dialogue(raw):
                 "mime":"application/pdf",
             })
     state["notes"] = str(raw.get("notes") or "")[:1600]
+    turns=raw.get("turns", [])
+    if not turns and state["history"]:
+        # Keep the user's conversation when upgrading; old assertions are
+        # explicitly historical, never evidence of actual tool execution.
+        turns=[]
+        for item in state["history"]:
+            if item["role"]=="user":turns.append({"user":item["content"],"tools":[],"answer":""})
+            elif turns:turns[-1]["answer"]=item["content"]
+    if isinstance(turns,list):
+        state["turns"]=[]
+        for t in turns[-12:]:
+            if not isinstance(t,dict) or not isinstance(t.get("user"),str) or not isinstance(t.get("tools",[]),list):continue
+            t=json.loads(json.dumps(t,ensure_ascii=False))
+            t["user"]=t["user"][:10000];t["answer"]=str(t.get("answer", ""))[:10000]
+            while t.get("tools") and len(json.dumps(t,ensure_ascii=False))>28000:
+                t["tools"].pop(0)
+                t["omitted_tool_results"]=t.get("omitted_tool_results",0)+1
+            state["turns"].append(t)
+        while state["turns"] and len(json.dumps(state["turns"],ensure_ascii=False))>32000:
+            state["turns"].pop(0)
     return state
 
 

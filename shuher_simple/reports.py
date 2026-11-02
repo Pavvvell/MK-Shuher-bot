@@ -17,26 +17,6 @@ def normalized(value):
     return ' '.join(str(value or '').casefold().replace('проект', 'проєкт').split())
 
 
-def is_report_request(text):
-    text = normalized(text)
-    if text.split(' ', 1)[0].split('@', 1)[0] == '/summary':
-        return True
-    if text.startswith('/'):
-        return False
-    # Explicit actions and historical questions keep their existing workflows.
-    if re.search(r'\b(?:напиши|надішли|скинь|передай|доручи|запиши|оформи\w*|створи|'
-                 r'додай|зміни|познач|раніше|колись|історі\w*|минул\w*|сьогодн\w*)\b', text):
-        return False
-    if re.search(r'\bскільки\b', text) and not re.search(r'\b(?:усього|всього)\b', text):
-        return False
-    if re.search(r'доступ\w*.*таблиц|таблиц\w*.*доступ', text):
-        return True
-    overall = re.search(r'(?:як|що).*\b(?:у нас|в нас)\b.*справ|стан справ|'
-                        r'зведення|загальн\w* (?:звіт|стан|картин)|підсумок.*підприємств', text)
-    topic = re.search(r'\b(?:заяв\w*|доручен\w*|закуп\w*|блокер\w*|'
-                      r'заблокован\w*|завис\w*|простроч\w*)\b|\bв блоці\b', text)
-    question = re.search(r'\b(?:що|які|скільки|покажи|покажеш|дай|стан|список|перелік|звіт)\b', text)
-    return bool(overall or (topic and question))
 
 
 def deadline(value):

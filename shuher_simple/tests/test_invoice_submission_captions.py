@@ -56,8 +56,7 @@ class InvoiceSubmissionCaptions(unittest.IsolatedAsyncioTestCase):
         payload={'bundle_id':'TEST-BUNDLE','package':package,
                  'photos':[{'file_id':f'photo-{i}'} for i in range(1,4)]}
         self.store.save_pending(456,'Рахунки',{'kind':'purchase_bundle',**payload})
-        await self.app.handle_message({'message':{'from':{'id':456,'first_name':'Yuriy','username':'worker'},
-                                      'chat':{'id':456,'type':'private'},'text':'так'}})
+        await self.app.commit_purchase_bundle(456,456,{'id':456,'username':'worker'},payload)
         photos=[c.args[1] for c in self.bot.await_args_list if c.args[0]=='sendPhoto']
         self.assertEqual([(p['photo'],p['caption']) for p in photos],[
             ('photo-1','Катана\nПроєкт А\nШакін'),
