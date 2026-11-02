@@ -567,6 +567,9 @@ async def handle_message(update):
     uid=int(person['id']);chat=chatdata['id']
     fresh=await sheet(store.register,person)
     if fresh and uid not in owners:await notify_owners(uid,person)
+    if not await sheet(permission,uid):
+        await send(chat,f'Потрібен доступ від власника. Твій Telegram ID: {uid}. Власник може налаштувати його у списку користувачів.')
+        return
     text=(msg.get('text') or msg.get('caption') or '').strip()
     # Explicit session-control command, never semantic routing of prose.
     if text.split('@',1)[0] in ('/new','/clear'):

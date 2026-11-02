@@ -1,9 +1,4 @@
-"""OpenAI Responses API adapter for Shuher's text, JSON and image prompts.
-
-Chat Completions is retained nowhere in production: GPT-6.1 Sol reasoning
-and future tool calls should use Responses. We log usage counts, never
-prompts, user IDs, image contents or API secrets.
-"""
+"""OpenAI usage metrics; prompts, arguments and credentials are never logged."""
 import logging
 
 log=logging.getLogger("shuher-lite.usage")

@@ -102,3 +102,10 @@ class AgentConversation(unittest.IsolatedAsyncioTestCase):
             if s.get('type')=='array':check(s['items'])
         for tool in SCHEMAS:
             Draft202012Validator.check_schema(tool['parameters']);check(tool['parameters'])
+
+    async def test_unregistered_access_does_not_consume_model_or_call_tools(self):
+        c=client(([],'unexpected'))
+        with patch.object(self.h.app,'openai',c):
+            await self.h.app.handle_message({'update_id':99,'message':{'from':{'id':999},'chat':{'id':999,'type':'private'},'text':'розкажи про космос'}})
+        self.assertEqual(c.responses.calls,[])
+        self.assertIn('Потрібен доступ',self.h.texts(999))

@@ -1,8 +1,7 @@
-"""Bounded, per-user conversation state kept in the private Google Sheet.
+"""Bounded per-user conversation and tool evidence in private Google Sheets.
 
-Do not store photos as bytes in Sheets: keep only Telegram file IDs until the
-next text/voice question. Conversational history is a short, text-only summary
-of the last exchange, scoped to the user's own Telegram ID.
+Attachments remain Telegram file IDs. Legacy text history is migrated into
+turns; raw media and private model reasoning are never persisted.
 """
 import json
 
