@@ -17,13 +17,15 @@ from agent_fixture import Harness
 
 logging.basicConfig(level=logging.WARNING)
 
-async def main(config):
+async def main(config, only=""):
+    selected=set(only.split(",")) if only else set()
     import yaml
     cfg=yaml.safe_load(Path(config).read_text())
     client=AsyncOpenAI(api_key=cfg['OPENAI_API_KEY'],timeout=90,max_retries=1)
     model=cfg.get('OPENAI_MODEL','gpt-6.1-sol')
     results=[]
     async def case(name,turns,check,uid=123,setup=None,confirm=False):
+        if selected and name not in selected:return
         h=Harness();start=time.monotonic();answers=[]
         try:
             if setup:setup(h)
@@ -95,6 +97,19 @@ async def main(config):
         require(row[headers.index('Статус')]=='Виконано','Task not completed')
     await case('task_status_context',['Які зараз є доручення?', 'Те доручення про перевірку болтів Юрій виконав, відміть.'],taskstatus,confirm=True)
     await case('ordinary_chat',['Як пояснити колезі різницю між ескізом і кресленням?'],no_effect)
+    await case('task_actual_request',['Доручи Юрію перевірити комплектацію до завтра.'],taskcheck,setup=tasksetup,confirm=True)
+    await case('negated_task',['Не став Юрію задачу перевірити комплектацію, я вже сам це зробив.'],no_effect)
+    await case('partial_payment_not_full',['Покажи всі рахунки', 'Перший оплачено лише наполовину. Не став повну оплату.'],
+               lambda h:require(h.store.get_pending(123) is None or
+                   all(c['values']['Статус оплати']!='Оплачено' for c in draft(h).get('changes',[])), 'Partial payment marked fully paid'))
+    await case('csv_export',['Завантаж мені всі заявки файлом CSV'],
+               lambda h:require(any(m=='sendDocument' and f and 'document' in f for m,p,f in h.sent),'CSV not sent'))
+    await case('missing_project',['Оформи заявку на 3 пачки електродів.'],
+               lambda h:require(h.store.get_pending(123) is None,'Invented project'),uid=456)
+    await case('project_request',['Запропонуй власнику додати проєкт Новий тестовий цех. Причина — нове замовлення.'],
+               lambda h:require(h.store.get_pending(456)['payload']['action']=='project_request','No project request'),uid=456)
+    await case('access_panel',['Покажи мені, кому які доступи відкриті'],
+               lambda h:require(any(p.get('reply_markup') for m,p,f in h.sent),'No access panel'))
     report={'model':model,'cases':len(results),'passed':sum(r['status']=='PASS' for r in results),'results':results}
     Path('/tmp/shuher-agent-eval.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
     print('SUMMARY',json.dumps({k:v for k,v in report.items() if k!='results'}),flush=True)
@@ -102,5 +117,5 @@ async def main(config):
     if report['passed']!=len(results):raise SystemExit(1)
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('--config',required=True);a=p.parse_args()
-    asyncio.run(main(a.config))
+    p=argparse.ArgumentParser();p.add_argument('--config',required=True);p.add_argument('--only',default='');a=p.parse_args()
+    asyncio.run(main(a.config,a.only))

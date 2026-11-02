@@ -243,7 +243,7 @@ class AgentTools:
             if values.get('Статус оплати') not in (None,'','Не оплачено'):
                 raise ValueError('Новий рахунок не є підтвердженням оплати.')
             values.update({'Тип документа':'Рахунок','Статус власника':'Очікує перевірки',
-                'Потрібна перевірка':'Так','Telegram файли':', '.join(photo_ids+document_ids),
+                'Потрібна перевірка':'Так','Передано бухгалтерії':'Ні','Telegram файли':', '.join(photo_ids+document_ids),
                 'Документ / посилання':f'Фото Telegram: {len(photo_ids)}; PDF: {len(document_ids)}',
                 'Джерело':'Telegram'})
         rid='SH-'+datetime.now(KYIV).strftime('%Y%m%d%H%M')+'-'+secrets.token_hex(3).upper()

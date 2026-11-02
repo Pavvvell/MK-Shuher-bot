@@ -24,6 +24,8 @@ from media import MAX_PHOTO_BYTES, transcribe_telegram_voice
 from task_notifications import plain_telegram_text, task_fields, authorized_recipient, task_marker, task_notice
 from concurrency import KeyedQueues, SheetsWorker, user_queue_key
 logging.basicConfig(level=logging.INFO)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 log=logging.getLogger("shuher-lite")
 KYIV=ZoneInfo("Europe/Kyiv")
 
@@ -75,17 +77,20 @@ async def write_as(uid,table,method,*args,require_read=False):
 
 
 async def bot_call(method,payload=None,files=None):
-    async with httpx.AsyncClient(timeout=45) as client:
-        response=await client.post(
-            telegram_api+"/"+method,
-            json=payload if files is None else None,
-            data=payload if files is not None else None,
-            files=files)
-        response.raise_for_status()
-        answer=response.json()
-        if not answer.get("ok"):
-            raise RuntimeError("Telegram API відхилив запит "+method)
-        return answer
+    try:
+        async with httpx.AsyncClient(timeout=45) as client:
+            response=await client.post(
+                telegram_api+"/"+method,
+                json=payload if files is None else None,
+                data=payload if files is not None else None,
+                files=files)
+            response.raise_for_status()
+            answer=response.json()
+            if not answer.get("ok"):
+                raise RuntimeError("Telegram API відхилив запит "+method)
+            return answer
+    except httpx.HTTPError:
+        raise RuntimeError("Telegram transport request failed") from None
 
 
 async def send(chat,text):

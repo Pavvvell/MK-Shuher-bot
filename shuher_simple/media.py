@@ -40,7 +40,7 @@ async def telegram_file_bytes(bot_call, token, file_id, limit):
                     chunks.append(chunk)
     except httpx.HTTPError:
         # Do not leak Telegram bot token embedded in the download URL.
-        raise ValueError("Не вдалося завантажити файл із Telegram.")
+        raise ValueError("Не вдалося завантажити файл із Telegram.") from None
     if not chunks:
         raise ValueError("Отримав порожній файл.")
     return b"".join(chunks)
