@@ -60,13 +60,14 @@ class InvoiceRules(unittest.TestCase):
     def test_exact_three_line_caption_and_unknowns(self):
         self.assertEqual(invoice_caption(invoice()),"Катана\nМет обробка (будівництво)\nШакін")
         text=invoice_caption(invoice(**{"Постачальник":"**Катана**\nТОВ", "Автор":"@buyer"}))
-        self.assertEqual(text,"Катана ТОВ\nМет обробка (будівництво)\nШакін")
+        self.assertEqual(text,"Катана\nМет обробка (будівництво)\nШакін")
         self.assertEqual(invoice_caption({}).splitlines(),
-                         ["Постачальника не вказано","Проєкт не вказано","Шакін"])
+                         ["Катана","Проєкт не вказано","Шакін"])
         for author in ("@unknown","Yuriy","Юрій Остапенко",""):
             self.assertEqual(invoice_caption(invoice(**{"Автор":author})).splitlines()[2],"Шакін")
         row=invoice(**{"Постачальник":"Інший постачальник", "Проєкт":"Інший проєкт", "Автор":"Yuriy"})
-        self.assertEqual(invoice_caption(row),"Інший постачальник\nІнший проєкт\nШакін")
+        self.assertEqual(invoice_caption(row),"Катана\nІнший проєкт\nШакін")
+        self.assertEqual(row["Постачальник"],"Інший постачальник")
         self.assertEqual(row["Автор"],"Yuriy")
 
     def test_missing_file_and_external_url_not_fetched(self):

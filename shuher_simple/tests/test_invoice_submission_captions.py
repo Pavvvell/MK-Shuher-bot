@@ -36,7 +36,7 @@ class InvoiceSubmissionCaptions(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(media),2)
         self.assertEqual([m[0] for m in media],['sendPhoto','sendDocument'])
         for method,payload in media:
-            self.assertEqual(payload['caption'],'Тестовий постачальник\nТестовий офіс\nШакін')
+            self.assertEqual(payload['caption'],'Катана\nТестовий офіс\nШакін')
             self.assertEqual(payload['chat_id'],123)
         self.assertEqual(media[0][1]['photo'],'photo-one')
         self.assertEqual(media[1][1]['document'],'pdf-one')
@@ -60,13 +60,14 @@ class InvoiceSubmissionCaptions(unittest.IsolatedAsyncioTestCase):
                                       'chat':{'id':456,'type':'private'},'text':'так'}})
         photos=[c.args[1] for c in self.bot.await_args_list if c.args[0]=='sendPhoto']
         self.assertEqual([(p['photo'],p['caption']) for p in photos],[
-            ('photo-1','Постачальник А\nПроєкт А\nШакін'),
-            ('photo-2','Постачальник А\nПроєкт А\nШакін'),
-            ('photo-3','Постачальник Б\nПроєкт Б\nШакін')])
+            ('photo-1','Катана\nПроєкт А\nШакін'),
+            ('photo-2','Катана\nПроєкт А\nШакін'),
+            ('photo-3','Катана\nПроєкт Б\nШакін')])
         self.assertTrue(all(p['chat_id']==123 for p in photos))
         self.assertIsNone(self.store.get_pending(456))
         headers,rows=self.store.read_table('Рахунки')
         added=[dict(zip(headers,r)) for r in rows if r[0].startswith('TEST-BUNDLE')]
         self.assertEqual(len(added),2)
         self.assertEqual([r['Telegram файли'] for r in added],['photo-1, photo-2','photo-3'])
+        self.assertEqual([r['Постачальник'] for r in added],['Постачальник А','Постачальник Б'])
         self.assertTrue(all(r['Автор']=='@worker' for r in added))

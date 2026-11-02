@@ -67,9 +67,9 @@ def payable_rows(headers, rows):
 
 
 def invoice_caption(row):
-    # Owner-requested forwarding signature; the submitter remains in the ledger.
+    # Fixed owner-requested signature; actual supplier/submitter stay in the ledger.
     return "\n".join((
-        one_line(row.get("Постачальник"), "Постачальника не вказано"),
+        "Катана",
         one_line(row.get("Проєкт"), "Проєкт не вказано"),
         "Шакін",
     ))
