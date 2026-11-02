@@ -19,7 +19,7 @@ from business import today_procurement, positive_quantity
 from company import build_company_context
 from knowledge import search_history, render_owner_rules
 from receipt_pdf import photos_to_pdf
-from payable_invoices import is_payable_request, payable_rows, send_invoice
+from payable_invoices import is_payable_request, payable_rows, send_invoice, invoice_caption
 from purchase_bundle import (validate_package, missing_invoice_project,
                              apply_invoice_project, grouped_preview,
                              validate_persistence, is_invoice_submission)
@@ -736,9 +736,10 @@ async def commit_purchase_bundle(uid,chat,person,payload):
                         "chat_id":owner,
                         "photo":photos[image_no-1]["file_id"],
                         "caption":(
-                            ("Рахунок" if entry["type"]=="invoice"
-                             else "Карткова покупка")+
-                            " · фото №"+str(image_no)+" · "+payload["bundle_id"]
+                            invoice_caption({"Постачальник":entry["supplier"],
+                                             "Проєкт":entry["project"]})
+                            if entry["type"]=="invoice" else
+                            "Карткова покупка · фото №"+str(image_no)+" · "+payload["bundle_id"]
                         ),
                     })
             success+=1
@@ -915,9 +916,11 @@ async def notify_owner_invoice(uid,record_id,values,attachments):
         try:
             await send(owner,message)
             for photo in attachments.get("photos",[]):
-                await bot_call("sendPhoto",{"chat_id":owner,"photo":photo["file_id"]})
+                await bot_call("sendPhoto",{"chat_id":owner,"photo":photo["file_id"],
+                                            "caption":invoice_caption(values)})
             for doc in attachments.get("documents",[]):
-                await bot_call("sendDocument",{"chat_id":owner,"document":doc["file_id"]})
+                await bot_call("sendDocument",{"chat_id":owner,"document":doc["file_id"],
+                                               "caption":invoice_caption(values)})
         except Exception:
             log.exception("Failed to send invoice media to owner %s",owner)
 
