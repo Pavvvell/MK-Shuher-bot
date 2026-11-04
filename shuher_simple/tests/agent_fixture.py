@@ -11,6 +11,7 @@ class Harness:
         env=dict(TELEGRAM_BOT_TOKEN='test',TELEGRAM_WEBHOOK_SECRET='test',OPENAI_API_KEY='test',SPREADSHEET_ID='test',OWNER_IDS='123')
         with patch.dict(os.environ,env),patch('store.SheetsStore'),patch('openai.AsyncOpenAI'):
             self.app=importlib.import_module('app')
+        self.real_bot=self.app.bot_call
         self.store=make_store();self.worker=SheetsWorker();self.sent=[];self.failed=set()
         self.store.client.data['_Shuher_Users'].append(['789','worker2','Sergey','',''])
         self.store.client.data['_Shuher_Access'].append(['789','Доручення','read','123'])

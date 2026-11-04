@@ -2,6 +2,8 @@ import json
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+import httpx
+from openai import BadRequestError
 
 from agent import run_agent
 from agent_fixture import Harness, call, client
@@ -125,6 +127,29 @@ class InvoiceCards(unittest.IsolatedAsyncioTestCase):
         parts=[p for x in transcript if isinstance(x.get('content'),list) for p in x['content']]
         self.assertTrue(any(p.get('type')=='input_file' for p in parts))
         self.assertNotIn('base64',json.dumps(self.h.store.get_dialogue(456)))
+
+    async def test_rejected_pdf_still_gets_project_buttons_without_worker_questions(self):
+        responses=[SimpleNamespace(output=[call('inspect_documents',{'ids':['pdf1']})],output_text='',status='completed',usage=None),
+            BadRequestError('Invalid PDF',response=httpx.Response(400,request=httpx.Request('POST','https://api.openai.com/v1/responses')),body={'code':'invalid_file'}),
+            SimpleNamespace(output=[call('offer_invoice_projects',{**args(),'amount':'','concerns':['PDF не прочитано.']})],output_text='',status='completed',usage=None),
+            SimpleNamespace(output=[],output_text='',status='completed',usage=None)]
+        c=SimpleNamespace(responses=SimpleNamespace(create=AsyncMock(side_effect=responses)))
+        with patch('agent_tools.telegram_file_bytes',AsyncMock(return_value=b'%PDF-damaged')):
+            self.assertIsNone(await run_agent(c,'gpt-6.1-sol',self.r,'На оплату'))
+        self.assertEqual(self.h.texts(456),'')
+        self.assertEqual(len([m for m,p,f in self.h.sent if m=='sendDocument']),1)
+
+    async def test_uploaded_photo_keyboard_is_encoded_for_telegram_multipart(self):
+        bodies=[]
+        def respond(request):
+            bodies.append(request.content)
+            return httpx.Response(200,json={'ok':True,'result':{'message_id':1}})
+        transport=httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        markup={'inline_keyboard':[[{'text':'Проєкт','callback_data':'inv:token:p:0'}]]}
+        with patch('app.httpx.AsyncClient',return_value=transport):
+            await self.h.real_bot('sendPhoto',{'chat_id':456,'reply_markup':markup},
+                                  {'photo':('invoice.jpg',b'fake-image','image/jpeg')})
+        self.assertIn(json.dumps(markup,ensure_ascii=False).encode(),bodies[0])
 
     async def test_album_photo_is_not_silently_queued_until_another_message(self):
         c=client(([call('offer_invoice_projects',args('album1'))],''),([], 'Готово'))

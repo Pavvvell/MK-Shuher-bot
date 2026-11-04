@@ -84,7 +84,8 @@ async def bot_call(method,payload=None,files=None):
             response=await client.post(
                 telegram_api+"/"+method,
                 json=payload if files is None else None,
-                data=payload if files is not None else None,
+                data={k:json.dumps(v,ensure_ascii=False) if isinstance(v,(dict,list)) else v
+                      for k,v in (payload or {}).items()} if files is not None else None,
                 files=files)
             response.raise_for_status()
             answer=response.json()
