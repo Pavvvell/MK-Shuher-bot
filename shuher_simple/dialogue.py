@@ -35,6 +35,8 @@ def normalize_dialogue(raw):
                 file_id = photo["file_id"].strip()
                 if 0 < len(file_id) <= 320:
                     state["photos"].append({"file_id": file_id, "group": str(photo.get("group") or "")[:140],
+                                            "unique_id": str(photo.get("unique_id") or "")[:160],
+                                            "as_document": bool(photo.get("as_document",False)),
                                             "mime": photo.get("mime") if photo.get("mime") in
                                             ("image/jpeg","image/png","image/webp") else "image/jpeg"})
     docs=raw.get("documents",[])
@@ -47,6 +49,7 @@ def normalize_dialogue(raw):
                 continue
             state["documents"].append({
                 "file_id":file_id,
+                "unique_id":str(item.get("unique_id") or "")[:160],
                 "file_name":str(item.get("file_name") or "document.pdf")[:150],
                 "mime":"application/pdf",
             })
@@ -92,7 +95,7 @@ def queue_photo(state, file_id, group="", caption="", mime="image/jpeg"):
 
 def queue_document(state,file_id,file_name="document.pdf",caption=""):
     state=normalize_dialogue(state)
-    if len(state["documents"])>=4:
+    if len(state["documents"])>=4 and not any(item['file_id']==file_id for item in state['documents']):
         raise ValueError("Не більше чотирьох PDF за один раз.")
     if not any(item["file_id"]==file_id for item in state["documents"]):
         state["documents"].append({

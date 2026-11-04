@@ -333,8 +333,8 @@ class SheetsStore:
                     return None
         return None
 
-    def save_pending(self,uid,table,payload):
-        expiry=(datetime.now(timezone.utc)+timedelta(minutes=30)).isoformat()
+    def save_pending(self,uid,table,payload,ttl_minutes=30):
+        expiry=(datetime.now(timezone.utc)+timedelta(minutes=ttl_minutes)).isoformat()
         self._upsert(PENDING,lambda r:r and str(r[0])==str(uid),
                      [str(uid),table,json.dumps(payload,ensure_ascii=False),expiry])
 

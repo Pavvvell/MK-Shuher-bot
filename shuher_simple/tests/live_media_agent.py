@@ -7,6 +7,7 @@ from PIL import Image,ImageDraw,ImageFont
 from openai import AsyncOpenAI
 from agent import run_agent
 from agent_fixture import Harness
+from invoice_intake import InvoiceIntake
 
 
 def invoice_image():
@@ -34,10 +35,11 @@ async def main(config):
             with patch('agent_tools.telegram_file_bytes',AsyncMock(return_value=invoice_image())):
                 answer=await run_agent(c,model,r,text)
                 if confirm:
-                    p=h.store.get_pending(456)
-                    assert p,'No invoice draft'
-                    result=await r.confirm(p['payload']['token'],True)
-                    assert result.get('ok'),result
+                    cards=[json.loads(row[2]) for row in h.store.data('_Shuher_Pending')[1:]
+                           if row[0].startswith('invoice:456:')]
+                    assert len(cards)==1,'No invoice project card'
+                    result=await InvoiceIntake(r).select(cards[0]['token'],0)
+                    assert result.get('complete'),result
                     media=[(m,p,f) for m,p,f in h.sent if m in ('sendPhoto','sendDocument') and p['chat_id']==123]
                     assert len(media)==1,media
                     assert media[0][1]['caption']=='Катана\nТестовий проєкт\nШакін'

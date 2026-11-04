@@ -16,6 +16,7 @@ from store import SheetsStore, request_reads
 from agent import run_agent
 from api_errors import quota_notice
 from agent_tools import AgentTools
+from invoice_intake import InvoiceIntake
 from payable_invoices import invoice_caption
 from purchase_bundle import validate_persistence
 from dialogue import queue_photo, queue_document, clear_attachments
@@ -95,9 +96,10 @@ async def bot_call(method,payload=None,files=None):
 
 
 async def send(chat,text):
+    if text is None:return  # An inline tool already rendered the complete answer.
     text=plain_telegram_text(str(text or "Немає даних."))
     for start in range(0,len(text),3900):
-        await bot_call("sendMessage",{"chat_id":chat,"text":text[start:start+3900]})
+        await bot_call("sendMessage",{"chat_id":chat,"text":text[start:start+3900],"link_preview_options":{"is_disabled":True}})
 
 
 async def notify_owners(uid,person):
@@ -579,6 +581,7 @@ async def handle_message(update):
         await send(chat,'Нова розмова. Чернетку скасовано; записи в таблицях збережені.')
         return
     state=await sheet(store.get_dialogue,uid)
+    incoming_ids=[]
     try:
         doc=msg.get('document') or {}
         mime=doc.get('mime_type','')
@@ -588,25 +591,26 @@ async def handle_message(update):
             photo=msg['photo'][-1] if msg.get('photo') else doc
             if int(photo.get('file_size') or 0)>MAX_PHOTO_BYTES:raise ValueError('Фото завелике (до 6 МБ).')
             state,_=queue_photo(state,photo['file_id'],msg.get('media_group_id'),text,mime if is_image else 'image/jpeg')
+            entry=next(p for p in state['photos'] if p['file_id']==photo['file_id'])
+            entry.update(unique_id=photo.get('file_unique_id',''),as_document=is_image)
+            incoming_ids=[photo['file_id']]
             await sheet(store.save_dialogue,uid,state)
-            # An album is transported as several events. Queue pages, then let
-            # the user's next message ask the model about the complete album.
-            if msg.get('media_group_id'):
-                if text:await send(chat,'Фото альбому отримую. Коли всі завантажаться, напиши, що потрібно зробити.')
-                return
             text=text or 'Надсилаю фото. Подивись на нього; якщо дія незрозуміла, уточни.'
         elif doc:
             if not await sheet(permission,uid):raise ValueError('Для роботи з файлами потрібен доступ від власника.')
             if mime!='application/pdf':raise ValueError('Підтримуються фото й PDF. Імпорт інших файлів ще не підключено.')
             if int(doc.get('file_size') or 0)>20_000_000:raise ValueError('PDF завеликий (до 20 МБ).')
             state=queue_document(state,doc['file_id'],doc.get('file_name','document.pdf'),text)
+            next(p for p in state['documents'] if p['file_id']==doc['file_id'])['unique_id']=doc.get('file_unique_id','')
+            incoming_ids=[doc['file_id']]
             await sheet(store.save_dialogue,uid,state)
-            text=text or 'Надсилаю PDF. Збережи посилання на файл у цій розмові й уточни, що з ним зробити.'
+            text=text or 'Надсилаю PDF. Прочитай документ.'
         elif msg.get('voice'):
             if not await sheet(permission,uid):raise ValueError('Для голосових потрібен доступ від власника.')
             text=await transcribe_telegram_voice(msg,bot_call,settings.telegram_bot_token,openai)
         if not text:return
         runtime=AgentTools(sys.modules[__name__],uid,chat,person,state,update.get('update_id',msg.get('message_id',secrets.token_hex(8))))
+        runtime.incoming_ids=incoming_ids
         await send(chat,await run_agent(openai,settings.openai_model,runtime,text))
     except ValueError as exc:
         await send(chat,str(exc))
@@ -620,6 +624,23 @@ async def handle_message(update):
 async def handle_callback(update):
     callback=update['callback_query']
     data=str(callback.get('data') or '')
+    if data.startswith('inv:'):
+        person=callback.get('from') or {};uid=int(person.get('id') or 0)
+        chatdata=(callback.get('message') or {}).get('chat') or {}
+        if chatdata.get('type')!='private' or chatdata.get('id')!=uid:
+            await bot_call('answerCallbackQuery',{'callback_query_id':callback['id'],'text':'Ця кнопка доступна автору файла.','show_alert':True})
+            return
+        await bot_call('answerCallbackQuery',{'callback_query_id':callback['id']})
+        try:
+            state=await sheet(store.get_dialogue,uid)
+            runtime=AgentTools(sys.modules[__name__],uid,uid,person,state,update['update_id'])
+            await InvoiceIntake(runtime).callback(callback)
+        except ValueError as exc:
+            await send(uid,str(exc))
+        except Exception:
+            log.exception('Invoice project submission failed')
+            await send(uid,'Не вдалося завершити доставку. Файл збережено; натисни той самий проєкт, щоб повторити.')
+        return
     if not data.startswith('act:'):
         await handle_access_callback(callback)
         return

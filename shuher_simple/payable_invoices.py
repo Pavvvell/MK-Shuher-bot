@@ -22,7 +22,7 @@ def payable_rows(headers, rows):
         if not rid or rid in seen:
             continue
         kind=row.get("Тип документа", "").casefold()
-        if kind and kind not in ("рахунок", "рахунок на оплату", "рахунок-фактура", "invoice"):
+        if kind and kind not in ("рахунок", "рахунок на оплату", "рахунок-фактура", "invoice", "замовлення", "документ на перевірку"):
             continue
         statuses=[one_line(row.get(field)).casefold().rstrip(".")
                   for field in ("Статус оплати", "Статус власника", "Статус")]
