@@ -108,6 +108,14 @@ class InvoiceCards(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len([m for m,p,f in self.h.sent if p.get('chat_id')==456]),1)
         self.assertEqual(self.h.texts(456),'')
 
+    async def test_empty_model_answer_after_card_is_success_not_error(self):
+        c=client(([call('offer_invoice_projects',args())],''),([], ''))
+        with patch.object(self.h.app,'openai',c):
+            await self.h.app.handle_message({'update_id':70,'message':{
+                'from':{'id':456},'chat':{'id':456,'type':'private'},'text':'На оплату'}})
+        self.assertEqual(self.h.texts(456),'')
+        self.assertEqual(len([m for m,p,f in self.h.sent if m=='sendDocument']),1)
+
     async def test_pdf_content_reaches_model_but_not_persisted_state(self):
         c=client(([call('inspect_documents',{'ids':['pdf1']})],''),
                  ([call('offer_invoice_projects',args())],''),([], 'Готово'))

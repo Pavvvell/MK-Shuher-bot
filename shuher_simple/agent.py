@@ -131,13 +131,16 @@ async def run_agent(client, model, runtime, text):
         calls = [item for item in output if item.get("type") == "function_call"]
         if not calls:
             answer = getattr(response, "output_text", "")
+            if getattr(runtime,'ui_presented',False):
+                turn['answer']='Картки документів із кнопками проєктів показано.'
+                await runtime.save()
+                log.info('agent_turn inline_cards steps=%s elapsed_ms=%d',step+1,(time.monotonic()-started)*1000)
+                return None
             if not answer:
                 raise ValueError("Модель не повернула відповіді. Результати виконаних кроків збережені.")
             turn["answer"] = answer
             await runtime.save()
             log.info("agent_turn steps=%s elapsed_ms=%d", step + 1, (time.monotonic()-started)*1000)
-            if getattr(runtime,'ui_presented',False):
-                return None  # The tool already showed the card; don't duplicate it.
             return answer
         for call in calls:
             arguments = {}
