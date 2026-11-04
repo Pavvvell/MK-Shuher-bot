@@ -14,6 +14,7 @@ from openai import AsyncOpenAI
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from store import SheetsStore, request_reads
 from agent import run_agent
+from api_errors import quota_notice
 from agent_tools import AgentTools
 from payable_invoices import invoice_caption
 from purchase_bundle import validate_persistence
@@ -609,9 +610,11 @@ async def handle_message(update):
         await send(chat,await run_agent(openai,settings.openai_model,runtime,text))
     except ValueError as exc:
         await send(chat,str(exc))
-    except Exception:
+    except Exception as exc:
         log.exception('Agent message failed')
-        await send(chat,'Не вдалося завершити відповідь. Виконані кроки могли вже зберегтися; перевірю їх перед повторною дією.')
+        notice=quota_notice(exc,owner=uid in owners)
+        await send(chat,notice+'\nЗбережені файли та записи залишаються. Після відновлення спочатку перевір стан операції.' if notice else
+                   'Не вдалося завершити відповідь. Виконані кроки могли вже зберегтися; перевірю їх перед повторною дією.')
 
 
 async def handle_callback(update):
@@ -641,6 +644,8 @@ async def handle_callback(update):
                        'Поясни результат щойно підтвердженої кнопкою операції. Не повторюй її.'))
     except ValueError as exc:
         await send(uid,str(exc))
-    except Exception:
+    except Exception as exc:
         log.exception('Confirmation failed')
-        await send(uid,'Операцію не вдалося завершити повністю. Чернетка збережена; перевірю запис перед повтором.')
+        notice=quota_notice(exc,owner=uid in owners)
+        await send(uid,notice+'\nПідтверджена кнопкою дія могла вже виконатися. Перед повтором потрібно перевірити запис.' if notice else
+                   'Операцію не вдалося завершити повністю. Чернетка збережена; перевірю запис перед повтором.')
