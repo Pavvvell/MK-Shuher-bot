@@ -12,6 +12,9 @@ S=string
 IDS=array(S(),200)
 FIELDS=array(obj(name=S(),value=S(maxLength=4000)),50)
 SCHEMAS=[
+ function('workflow_context','Лише Павло: читає надіслані РРД і важливі листи Gmail, адресата/тему/текст листа та назви таблиць Master. Для відповіді на Telegram-повідомлення автоматично вибирає пов’язане з ним сповіщення. Пошук порожній = останні.',query=S(maxLength=200)),
+ function('workflow_read_master','Лише Павло: читає актуальні робочі рядки Google Sheets Master. Назву таблиці бери з workflow_context. Не змінює стан.',table=S(),offset={'type':'integer','minimum':0},limit={'type':'integer','minimum':1,'maximum':50}),
+ function('prepare_gmail_reply','На явне прохання Павла готує текст відповіді й кнопку Gmail із заповненими адресатом, темою й текстом. Лист автоматично НЕ надсилається і ще не збережений у Gmail. message_id бери лише з workflow_context; текст пишеш ти за проханням Павла, даними листа й мовою адресата. Інструмент сам показує результат.',message_id=S(),body=S(minLength=1,maxLength=2500)),
  function('read_records','Читає актуальні рядки дозволеної таблиці. Порожні filters = всі. Повертає загальну кількість і сторінку, не обрізаний звіт.',
           table=S(),query=S('Пошукові слова або порожньо'),ids=IDS,offset={'type':'integer','minimum':0},limit={'type':'integer','minimum':1,'maximum':50}),
  function('table_schema','Поля конкретної доступної таблиці й допустимі статуси. Використовуй перед підготовкою запису.',table=S()),

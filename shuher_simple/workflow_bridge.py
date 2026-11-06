@@ -3,6 +3,8 @@ import hashlib
 import json
 import re
 import secrets
+from email.utils import parseaddr
+from urllib.parse import urlencode
 from datetime import datetime, timezone, timedelta, date
 
 from fastapi import HTTPException
@@ -11,7 +13,9 @@ from pydantic import BaseModel, ConfigDict, Field
 STAGING = '_Shuher_Codex_Staging'
 INBOX = '_Shuher_Codex_Inbox'
 OUTBOX = '_Shuher_Codex_Outbox'
+MAIL = '_Shuher_Codex_Mail'
 HEADERS = {
+    MAIL: ['message_id', 'context_json'],
     STAGING: ['key', 'event_json', 'exported_at'],
     INBOX: ['key', 'received_at', 'event_json'],
     OUTBOX: ['key', 'kind', 'source_id', 'mode', 'text', 'expires_at', 'status',
@@ -60,6 +64,16 @@ def event(update, owner_id):
             'received_at': now().isoformat(), 'source': 'telegram', 'status': 'new'}
 
 
+class MailContext(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    message_id: str = Field(min_length=1, max_length=160)
+    thread_id: str = Field(default='', max_length=160)
+    sender: str = Field(default='', max_length=300)
+    reply_to: str = Field(default='', max_length=300)
+    subject: str = Field(default='', max_length=400)
+    body: str = Field(default='', max_length=12000)
+
+
 class Notice(BaseModel):
     model_config = ConfigDict(extra='forbid')
     kind: str = Field(pattern=r'^(morning|mail)$')
@@ -67,6 +81,7 @@ class Notice(BaseModel):
     mode: str = Field(default='shadow', pattern=r'^(shadow|test|live)$')
     text: str = Field(min_length=1, max_length=3000)
     expires_at: datetime
+    mail: MailContext | None = None
 
 
 class WorkflowBridge:
@@ -128,6 +143,8 @@ class WorkflowBridge:
             except ValueError: raise ValueError('Morning source_id must be the Kyiv YYYY-MM-DD date')
         elif not re.fullmatch(r'[A-Za-z0-9_-]+', notice.source_id):
             raise ValueError('Mail source_id must be a Gmail message ID')
+        if notice.mail and (notice.kind != 'mail' or notice.source_id != notice.mail.message_id):
+            raise ValueError('Mail context must match the Gmail source ID')
         expiry = notice.expires_at
         if expiry.tzinfo is None or not now() < expiry <= now() + timedelta(hours=24):
             raise ValueError('Expiry must have timezone and be within the next 24 hours')
@@ -143,14 +160,55 @@ class WorkflowBridge:
         def write():
             rows = ensure(self.master, OUTBOX)
             _, existing = find(rows, key)
+            if existing and existing[4] != text:
+                raise ValueError('Same key has different content; no overwrite')
+            if notice.mail:
+                mails=ensure(self.master, MAIL)
+                n,old=find(mails, notice.source_id)
+                values=[notice.source_id, notice.mail.model_dump_json()]
+                if old and json.loads(old[1]) != notice.mail.model_dump():
+                    raise ValueError('Same Gmail ID has different context; no overwrite')
+                if not n:self.master.append(MAIL,values)
             if existing:
-                if existing[4] != text: raise ValueError('Same key has different content; no overwrite')
                 return {'key': key, 'status': existing[6], 'duplicate': True}
             status = 'shadow' if notice.mode == 'shadow' else 'pending'
             self.master.append(OUTBOX, [key, notice.kind, notice.source_id, notice.mode, text,
                                        expiry.isoformat(), status, '', now().isoformat()])
             return {'key': key, 'status': status, 'duplicate': False}
         return await self.a.sheet(write)
+
+    async def context(self, query='', reply_message_id=None):
+        def read():
+            titles=self.master.titles()
+            rows=self.master.data(OUTBOX,limit=None)[1:] if OUTBOX in titles else []
+            mails={r[0]:json.loads(r[1]) for r in self.master.data(MAIL,limit=None)[1:]} if MAIL in titles else {}
+            matching=[r for r in rows if r[6]=='sent' and r[3]=='live']
+            if reply_message_id:
+                exact=[r for r in matching if r[7]==str(reply_message_id)]
+                if exact:matching=exact
+            if query:matching=[r for r in matching if query.casefold() in (r[4]+' '+r[2]).casefold()]
+            return {'notifications':[{'kind':r[1],'source_id':r[2],'text':r[4],
+                'mail':mails.get(r[2]),'telegram_message_id':r[7]} for r in matching[-12:]],
+                'master_tables':[t for t in titles if not t.startswith('_')]}
+        return await self.a.sheet(read)
+
+    async def reply_link(self, message_id, body):
+        def read():
+            rows=ensure(self.master,MAIL)
+            _,row=find(rows,message_id)
+            if not row:raise ValueError('Лист ще не завантажено. Вкажи лист із повідомлення «Пошта».')
+            return json.loads(row[1])
+        mail=await self.a.sheet(read)
+        recipient=parseaddr(mail.get('reply_to') or mail.get('sender') or '')[1]
+        if not re.fullmatch(r'[^\s<>@,;]+@[^\s<>@,;]+\.[^\s<>@,;]+',recipient) or any(c in (mail.get('reply_to') or mail.get('sender') or '') for c in '\r\n'):
+            raise ValueError('У листі немає коректної адреси для відповіді.')
+        if not body.strip() or len(body)>2500:raise ValueError('Потрібен текст відповіді до 2500 символів.')
+        subject=mail.get('subject','')
+        if not subject.lower().startswith('re:'):subject='Re: '+subject
+        url='https://mail.google.com/mail/?'+urlencode({'authuser':'metal.unit.llc@gmail.com',
+            'view':'cm','fs':'1','to':recipient,'su':subject,'body':body})
+        return {'to':recipient,'subject':subject,'body':body,'url':url,'sent':False,
+                'saved_to_gmail':False,'note':'Кнопка відкриває заповнений новий лист; автоматично не надсилає.'}
 
     async def deliver(self, key):
         # Never auto-retry sending/uncertain: Telegram has no idempotency key.

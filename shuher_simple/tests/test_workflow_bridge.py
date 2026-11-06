@@ -144,3 +144,47 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         other=await self.b.enqueue(self.notice())
         self.assertEqual(first['key'],again['key']);self.assertNotEqual(first['key'],other['key'])
         self.assertTrue(self.master.data(OUTBOX)[1][4].startswith('📋 РРД'))
+
+    async def test_email_reply_uses_reply_to_encodes_body_and_never_sends_email(self):
+        from urllib.parse import parse_qs,urlparse
+        await self.b.enqueue(self.notice(mail={'message_id':'gmail123','sender':'Vendor <sales@example.com>',
+            'reply_to':'Support <help@example.com>','subject':'Поставка & строк','body':'Original'}))
+        reply=await self.b.reply_link('gmail123','Дякую!\nЧекаємо + креслення & ціни.')
+        query=parse_qs(urlparse(reply['url']).query)
+        self.assertEqual(query['to'],['help@example.com'])
+        self.assertEqual(query['authuser'],['metal.unit.llc@gmail.com'])
+        self.assertEqual(query['body'],['Дякую!\nЧекаємо + креслення & ціни.'])
+        self.assertEqual(query['su'],['Re: Поставка & строк'])
+        self.assertFalse(reply['sent']);self.assertFalse(reply['saved_to_gmail']);self.assertEqual(self.h.sent,[])
+        with self.assertRaises(ValueError):await self.b.reply_link('unknown','hello')
+
+    async def test_mail_context_conflict_does_not_replace_recipient(self):
+        await self.b.enqueue(self.notice(mail={'message_id':'gmail123','sender':'one@example.com'}))
+        with self.assertRaises(ValueError):
+            await self.b.enqueue(self.notice(mail={'message_id':'gmail123','sender':'other@example.com'}))
+        self.assertEqual((await self.b.reply_link('gmail123','hello'))['to'],'one@example.com')
+        with self.assertRaises(ValueError):await self.b.enqueue(self.notice(mail={'message_id':'different'}))
+
+    async def test_reply_context_selects_exact_live_notification(self):
+        self.cfg.codex_live_delivery=True
+        for source in ['first','second']:
+            q=await self.b.enqueue(self.notice(mode='live',source_id=source,mail={'message_id':source,'sender':'a@example.com'}))
+            await self.b.deliver(q['key'])
+        rows=self.master.data(OUTBOX)
+        row=rows[1];row[7]='700';self.master.update(OUTBOX,2,row)
+        row=rows[2];row[7]='701';self.master.update(OUTBOX,3,row)
+        result=await self.b.context('',700)
+        self.assertEqual([x['source_id'] for x in result['notifications']],['first'])
+
+    async def test_workflow_tools_are_fixed_owner_only(self):
+        with patch.object(self.h.app,'workflow_bridge',self.b):
+            worker=self.h.runtime(456)
+            for action in (worker.workflow_context(''),worker.workflow_read_master('Заявки',0,10),worker.prepare_gmail_reply('gmail123','hello')):
+                with self.assertRaises(ValueError):await action
+            await self.b.enqueue(self.notice(mail={'message_id':'gmail123','sender':'a@example.com'}))
+            owner=self.h.runtime(123)
+            result=await owner.prepare_gmail_reply('gmail123','Дякую.')
+            self.assertFalse(result['sent']);self.assertTrue(owner.ui_presented)
+            method,payload,_=self.h.sent[-1]
+            self.assertEqual(method,'sendMessage');self.assertEqual(payload['chat_id'],123)
+            self.assertIn('mail.google.com',payload['reply_markup']['inline_keyboard'][0][0]['url'])

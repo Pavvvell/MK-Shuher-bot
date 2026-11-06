@@ -41,6 +41,7 @@ class AgentTools:
         self.cache={}
         self.ui_presented=False
         self.incoming_ids=[]
+        self.reply_message_id=None
 
     async def save(self):
         await self.a.sheet(self.a.store.save_dialogue,self.uid,self.state)
@@ -71,6 +72,8 @@ class AgentTools:
         return {'owner_rules':rules,'time_kyiv':datetime.now(KYIV).isoformat(),'user_id':self.uid,
                 'is_owner':self.uid in self.a.owners,'access':access,
                 'incoming_file_ids':self.incoming_ids,
+                'workflow_enabled':bool(self.a.workflow_bridge and self.uid==self.a.workflow_bridge.owner),
+                'reply_message_id':self.reply_message_id,
                 'attachments':{'photos':self.state['photos'],'documents':self.state['documents'],
                                'captions':self.state['notes']},
                 'pending':compact(pending) if pending else None}
@@ -98,6 +101,34 @@ class AgentTools:
                     ids.update(str(r['ID']) for r in result.get('rows',[]) if r.get('ID'))
                     ids.update(result.get('delivered',[]))
         return ids
+
+    async def workflow_context(self,query):
+        await self.rights(owner=True)
+        bridge=self.a.workflow_bridge
+        if bridge is None or self.uid!=bridge.owner:raise ValueError('Робочий inbox ще не підключено.')
+        return await bridge.context(query,self.reply_message_id)
+
+    async def workflow_read_master(self,table,offset,limit):
+        await self.rights(owner=True)
+        bridge=self.a.workflow_bridge
+        if bridge is None or self.uid!=bridge.owner:raise ValueError('Master ще не підключено.')
+        if table.startswith('_') or table not in await self.a.sheet(bridge.master.titles):raise ValueError('Невідома робоча таблиця Master.')
+        rows=await self.a.sheet(bridge.master.data,table,None)
+        return {'table':table,'headers':rows[0] if rows else [],'rows':rows[1+offset:1+offset+limit],
+                'total':max(0,len(rows)-1),'source':'Master'}
+
+    async def prepare_gmail_reply(self,message_id,body):
+        await self.rights(owner=True)
+        bridge=self.a.workflow_bridge
+        if bridge is None or self.uid!=bridge.owner:raise ValueError('Пошта ще не підключена.')
+        result=await bridge.reply_link(message_id,body)
+        await self.a.bot_call('sendMessage',{'chat_id':self.chat,
+            'text':f"✉️ {result['to']}\n{result['subject']}\n\n{body}",
+            'link_preview_options':{'is_disabled':True},
+            'reply_markup':{'inline_keyboard':[[{'text':'Відкрити відповідь у Gmail','url':result['url']}]]}})
+        self.ui_presented=True
+        return {'ok':True,'user_message_already_sent':True,'sent':False,'saved_to_gmail':False,
+                'to':result['to'],'subject':result['subject']}
 
     async def read_records(self,table,query,ids,offset,limit):
         await self.rights(table,read=True)

@@ -630,6 +630,7 @@ async def handle_message(update):
         if not text:return
         runtime=AgentTools(sys.modules[__name__],uid,chat,person,state,update.get('update_id',msg.get('message_id',secrets.token_hex(8))))
         runtime.incoming_ids=incoming_ids
+        runtime.reply_message_id=(msg.get("reply_to_message") or {}).get("message_id")
         await send(chat,await run_agent(openai,settings.openai_model,runtime,text))
     except ValueError as exc:
         await send(chat,str(exc))
