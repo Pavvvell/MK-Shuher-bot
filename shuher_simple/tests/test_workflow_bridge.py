@@ -188,3 +188,18 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
             method,payload,_=self.h.sent[-1]
             self.assertEqual(method,'sendMessage');self.assertEqual(payload['chat_id'],123)
             self.assertIn('mail.google.com',payload['reply_markup']['inline_keyboard'][0][0]['url'])
+
+
+    async def test_natural_query_ranks_mail_and_falls_back_without_false_empty(self):
+        self.cfg.codex_live_delivery=True
+        for source,text in [('first','Постачальник BÄSTLEIN'),('second','Інший постачальник')]:
+            q=await self.b.enqueue(self.notice(mode='live',source_id=source,text=text))
+            await self.b.deliver(q['key'])
+        result=await self.b.context('BASTLEIN останній лист')
+        self.assertEqual(result['notifications'][0]['source_id'],'first')
+        result=await self.b.context('невдалий пошуковий запит')
+        self.assertTrue(result['query_fallback_to_recent'])
+        self.assertEqual(len(result['notifications']),2)
+        row=self.master.data(OUTBOX)[1];row[7]='888';self.master.update(OUTBOX,2,row)
+        result=await self.b.context('other',888)
+        self.assertEqual([r['source_id'] for r in result['notifications']],['first'])

@@ -3,6 +3,7 @@ import hashlib
 import json
 import re
 import secrets
+import unicodedata
 from email.utils import parseaddr
 from urllib.parse import urlencode
 from datetime import datetime, timezone, timedelta, date
@@ -183,12 +184,25 @@ class WorkflowBridge:
             rows=self.master.data(OUTBOX,limit=None)[1:] if OUTBOX in titles else []
             mails={r[0]:json.loads(r[1]) for r in self.master.data(MAIL,limit=None)[1:]} if MAIL in titles else {}
             matching=[r for r in rows if r[6]=='sent' and r[3]=='live']
-            if reply_message_id:
-                exact=[r for r in matching if r[7]==str(reply_message_id)]
-                if exact:matching=exact
-            if query:matching=[r for r in matching if query.casefold() in (r[4]+' '+r[2]).casefold()]
+            exact=[r for r in matching if reply_message_id and r[7]==str(reply_message_id)]
+            fallback=False
+            if exact:
+                matching=exact
+            elif query:
+                def normalized(text):
+                    return ''.join(c for c in unicodedata.normalize('NFKD',text.casefold()) if not unicodedata.combining(c))
+                terms=set(re.findall(r'\w{2,}',normalized(query)))
+                ranked=[]
+                for row in matching:
+                    haystack=normalized(row[4]+' '+row[2]+' '+json.dumps(mails.get(row[2],{}),ensure_ascii=False))
+                    score=sum(term in haystack for term in terms)
+                    if score:ranked.append((score,row))
+                if ranked:matching=[r for _,r in sorted(ranked,key=lambda x:x[0],reverse=True)[:12]]
+                else:fallback=True
+            selected=matching if exact or (query and not fallback) else matching[-12:]
             return {'notifications':[{'kind':r[1],'source_id':r[2],'text':r[4],
-                'mail':mails.get(r[2]),'telegram_message_id':r[7]} for r in matching[-12:]],
+                'mail':mails.get(r[2]),'telegram_message_id':r[7]} for r in selected],
+                'query_fallback_to_recent':fallback,
                 'master_tables':[t for t in titles if not t.startswith('_')]}
         return await self.a.sheet(read)
 
