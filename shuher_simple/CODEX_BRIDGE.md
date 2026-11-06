@@ -1,15 +1,35 @@
 # Codex ↔ Шухер: isolated implementation and rollout review
 
-Status: implemented on `feature/codex-workflow-bridge`; **not deployed**.
-All new features default OFF. No existing automation, launchd job, Gmail data,
-Master data, bot webhook, production environment or production branch was changed.
+Status 2026-11-06: application commit `8e6aebde65bcf7530c6c2ff1df26fe83b2005666`
+deployed to existing Cloud Run as **shuher-lite-00039-vrf**, 100% traffic.
+Owner ID 431633504. Bridge enabled; test delivery enabled; live delivery disabled
+pending end-to-end verification. REGISTER_TELEGRAM_WEBHOOK=false.
+Live webhook verified unchanged, pending_update_count=0. Health OK.
+175 bot tests + 4 local adapter tests passed. Real shadow runs read Master and
+work Gmail and produced one RRD and two important-mail notices. Gmail compose
+link verified in work account with synthetic recipient/subject/body; no email sent.
+
+**Remaining blocker:** Master is owner-only. Granting the existing service account
+writer access was rejected by automatic approval review; user confirmation is pending.
+Authenticated sync currently returns HTTP 500 because service account lacks access.
+No local live schedules enabled; old ChatGPT Automations remain unchanged.
+
+Deployment source is `feature/codex-workflow-bridge`. Other remote branches remain
+at their old heads; do not use a plain pull from them for the next deployment.
+
+After access approval: sync → send one labeled test RRD/mail twice and verify one
+Telegram delivery each → reply through Telegram and verify Master inbox/local pull
+→ enable CODEX_LIVE_DELIVERY → publish fresh real results → enable local schedules
+with `codex-workflow/bin/enable-shuher-delivery.py --after-smoke-test`.
+Local morning/mail schedules remain Mac-dependent. Gmail reply tool opens a new
+prefilled message, not a guaranteed in-thread reply; user presses Send.
 
 ## Verified baseline
 
 - Repository: https://github.com/Pavvvell/MK-Shuher-bot
 - Production source branch: `feature/simple-sheets-bot`, baseline commit `cdb63bc2641e180a3b88fc012efb3de093531eb3`.
 - GCP: project `mk-shuher-bot`, service `shuher-lite`, region `europe-west3`.
-- Last observed deployed revision: `shuher-lite-00038-zdx` (previous deployment).
+- Previous deployed revision: `shuher-lite-00038-zdx`; current revision listed above.
 - Live read-only `/health` check during this audit: status `ok`, Sheets backend,
   `gpt-6.1-sol`, per-user queues, parallel_requests 4, model-first-tools.
 - Service URL: https://shuher-lite-qydspxcqya-ey.a.run.app
@@ -26,8 +46,8 @@ Master data, bot webhook, production environment or production branch was change
   bounded and unsuitable as a permanent inbox. Existing metadata tabs:
   `_Shuher_Users`, `_Shuher_Access`, `_Shuher_Pending`, `_Shuher_Updates`, `_Shuher_Dialog`.
 - No Gmail sender/reader, Drive file store, Firebase, or distributed queue in bot.
-- Current live webhook URL and service-account access to the new Master have NOT
-  been independently queried during this audit. Verify before any rollout.
+- Webhook independently verified unchanged. Master permissions independently read:
+  owner only, no runtime service-account access yet.
 
 ## Smallest compatible scheme
 
