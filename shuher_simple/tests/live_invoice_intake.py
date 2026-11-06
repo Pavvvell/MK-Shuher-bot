@@ -61,8 +61,7 @@ async def main(config):
                 assert (await flow.load(card['token']))['complete']
             delivered=[p for m,p,f in h.sent if m in ('sendPhoto','sendDocument') and p['chat_id']==123]
             assert len(delivered)==len(files),len(delivered)
-            if name in ('unknown_price','mixed_batch'):
-                assert any(m=='sendMessage' and p['chat_id']==123 and 'сум' in p['text'].lower() for m,p,f in h.sent)
+            assert not any(m=='sendMessage' and p['chat_id']==123 for m,p,f in h.sent)
             status='PASS'
         except Exception as exc:status='FAIL';error=type(exc).__name__+': '+str(exc)[:1000]
         turns=h.store.get_dialogue(456)['turns']

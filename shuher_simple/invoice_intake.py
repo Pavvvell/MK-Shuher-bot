@@ -149,12 +149,6 @@ class InvoiceIntake:
                     reply = await self.a.bot_call(method, payload)
                 receipt['file_message_id'] = reply['result']['message_id']
                 await self.save(card)
-            if card['warnings'] and not receipt.get('warning_sent'):
-                await self.a.bot_call('sendMessage', {'chat_id': owner,
-                    'reply_parameters': {'message_id': receipt['file_message_id']},
-                    'text': '⚠️ Перевір цей документ:\n'+'\n'.join('• '+x for x in card['warnings'])})
-                receipt['warning_sent'] = True
-                await self.save(card)
         card['complete'] = True
         await self.save(card)
         return card

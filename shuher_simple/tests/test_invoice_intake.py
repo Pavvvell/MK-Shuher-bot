@@ -44,18 +44,18 @@ class InvoiceCards(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((await self.flow.load(card['token']))['complete'])
         self.assertNotIn('Підтверд',self.h.texts(456))
 
-    async def test_unknown_price_goes_only_to_owner_as_separate_reply(self):
+    async def test_unknown_price_sends_only_file_and_keeps_concerns_in_ledger(self):
         a=args();a.update(amount='',supplier='',document_type='Замовлення')
         result=await self.flow.offer(**a)
         await self.flow.select(result['card_id'],0)
         self.assertEqual(len(self.owner_media()),1)
         notices=[p for m,p,_ in self.h.sent if m=='sendMessage' and p['chat_id']==123]
-        self.assertEqual(len(notices),1)
-        self.assertIn('суму',notices[0]['text'])
-        self.assertIn('reply_parameters',notices[0])
+        self.assertEqual(notices,[])
+        self.assertEqual(len([p for m,p,_ in self.h.sent if p.get('chat_id')==123]),1)
         self.assertNotIn('суму',self.h.texts(456))
         headers,rows=self.h.store.read_table('Рахунки');row=dict(zip(headers,rows[-1]))
         self.assertEqual(row['Сума'],'');self.assertEqual(row['Тип документа'],'Замовлення')
+        self.assertIn('суму',row['Коментар'])
         self.assertIn(row['ID'],[x['ID'] for x in payable_rows(headers,rows)])
 
     async def test_batch_cards_keep_files_and_projects_separate_after_restart(self):
@@ -82,17 +82,16 @@ class InvoiceCards(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first['card_id'],second['card_id'])
         self.assertEqual(len(self.owner_media()),1)
 
-    async def test_partial_warning_failure_retries_without_resending_file_or_row(self):
+    async def test_old_partial_delivery_completes_without_resending_or_warning(self):
         a=args();a['amount']='';result=await self.flow.offer(**a)
-        original=self.h.bot
-        async def fail_warning(method,payload=None,files=None):
-            if method=='sendMessage' and payload['chat_id']==123:raise RuntimeError('down')
-            return await original(method,payload,files)
-        with patch.object(self.h.app,'bot_call',fail_warning):
-            with self.assertRaises(RuntimeError):await self.flow.select(result['card_id'],0)
-        self.assertEqual(len(self.owner_media()),1)
         await self.flow.select(result['card_id'],0)
-        self.assertEqual(len(self.owner_media()),1)
+        card=await self.flow.load(result['card_id'])
+        card['complete']=False  # Previously delivered file, old warning step unfinished.
+        await self.flow.save(card)
+        sent_before=len(self.h.sent)
+        await self.flow.select(result['card_id'],0)
+        self.assertEqual(len(self.h.sent),sent_before)
+        self.assertTrue((await self.flow.load(result['card_id']))['complete'])
         self.assertEqual(len(self.h.store.read_table('Рахунки')[1]),4)
 
     async def test_other_user_and_revoked_permission_cannot_submit(self):
