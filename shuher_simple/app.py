@@ -17,6 +17,7 @@ from agent import run_agent
 from api_errors import quota_notice
 from agent_tools import AgentTools
 from invoice_intake import InvoiceIntake
+from workflow_bridge import WorkflowBridge, install_routes
 from payable_invoices import invoice_caption
 from purchase_bundle import validate_persistence
 from dialogue import queue_photo, queue_document, clear_attachments
@@ -43,6 +44,12 @@ class Settings(BaseSettings):
     google_service_account_json_b64:str=""
     register_telegram_webhook:bool=False
     public_base_url:str=""
+    codex_bridge_enabled:bool=False
+    codex_master_spreadsheet_id:str="1P3v-A5Obzfwbw1CpunZEztKJ_tYORZOr5KSrQXvWias"
+    codex_owner_id:int=0
+    codex_bridge_secret:str=""
+    codex_test_delivery:bool=False
+    codex_live_delivery:bool=False
 
 
 settings=Settings()
@@ -58,6 +65,7 @@ telegram_api=f"https://api.telegram.org/bot{settings.telegram_bot_token}"
 queues=KeyedQueues()
 sheet_worker=SheetsWorker()
 pdf_worker=SheetsWorker("shuher-pdf")
+workflow_bridge=None
 
 async def sheet(method,*args):
     return await sheet_worker.run(method,*args)
@@ -485,6 +493,11 @@ async def handle_access_callback(callback):
 @asynccontextmanager
 async def lifespan(app:FastAPI):
     await sheet(store.bootstrap)
+    global workflow_bridge
+    workflow_bridge=None
+    if settings.codex_bridge_enabled:
+        workflow_bridge=WorkflowBridge(sys.modules[__name__], SheetsStore(
+            settings.codex_master_spreadsheet_id, settings.google_service_account_json_b64))
     # Old bot installations might still have a persistent Mini App button.
     # Set both the global menu and owners' per-chat overrides to commands.
     # Failures must never stop an otherwise healthy Cloud Run container.
@@ -517,6 +530,7 @@ async def lifespan(app:FastAPI):
 
 
 app=FastAPI(lifespan=lifespan)
+install_routes(sys.modules[__name__])
 
 @app.get("/health")
 async def health():
@@ -574,6 +588,10 @@ async def handle_message(update):
     if not await sheet(permission,uid):
         await send(chat,f'Потрібен доступ від власника. Твій Telegram ID: {uid}. Власник може налаштувати його у списку користувачів.')
         return
+    if workflow_bridge is not None:
+        # Durable staging before model/business work; Master is never called here.
+        # Existing Sheets failure returns 503, so Telegram retries before any action.
+        await workflow_bridge.capture(update)
     text=(msg.get('text') or msg.get('caption') or '').strip()
     # Explicit session-control command, never semantic routing of prose.
     if text.split('@',1)[0] in ('/new','/clear'):

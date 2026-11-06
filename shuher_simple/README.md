@@ -129,3 +129,9 @@ Cloud Run: `sh deploy.sh` із приватною конфігурацією. З
 
 Логи містять назви інструментів, час і лічильники токенів. Секрети, тексти
 розмов, аргументи інструментів і байти фото до журналу не записуються.
+
+## Codex bridge (disabled by default)
+
+See [CODEX_BRIDGE.md](CODEX_BRIDGE.md) for the proposed inbox/outbox integration,
+separate feature gates, delivery ledger and exact staging/production acceptance plan.
+No production deployment or scheduler cutover is part of this branch.
