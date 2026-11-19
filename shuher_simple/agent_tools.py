@@ -15,6 +15,7 @@ from invoice_updates import prepare_invoice_update, commit_invoice_update
 from invoice_intake import InvoiceIntake
 from knowledge import search_history, render_owner_rules
 from media import telegram_file_bytes, MAX_PHOTO_BYTES
+from master_updates import apply_updates, row_dict
 from payable_invoices import payable_rows, send_invoice
 from projects import approved_projects, canonical_project, decide_project
 from purchase_bundle import validate_package, validate_persistence, grouped_preview
@@ -42,6 +43,7 @@ class AgentTools:
         self.ui_presented=False
         self.incoming_ids=[]
         self.reply_message_id=None
+        self.master_snapshots={}
 
     async def save(self):
         await self.a.sheet(self.a.store.save_dialogue,self.uid,self.state)
@@ -87,7 +89,7 @@ class AgentTools:
         errors=list(Draft202012Validator(BY_NAME[name]['parameters']).iter_errors(args))
         if errors:raise ValueError('Некоректні аргументи інструмента: '+errors[0].message[:250])
         key=name+json.dumps(args,sort_keys=True,ensure_ascii=False)
-        if key in self.cache:return self.cache[key]
+        if key in self.cache and name not in ('workflow_read_master', 'workflow_update_master'):return self.cache[key]
         result=await getattr(self,name)(**args)
         self.cache[key]=result
         return result
@@ -113,9 +115,22 @@ class AgentTools:
         bridge=self.a.workflow_bridge
         if bridge is None or self.uid!=bridge.owner:raise ValueError('Master ще не підключено.')
         if table.startswith('_') or table not in await self.a.sheet(bridge.master.titles):raise ValueError('Невідома робоча таблиця Master.')
+        await self.a.sheet(bridge.master._invalidate,table)
         rows=await self.a.sheet(bridge.master.data,table,None)
+        for row in rows[1+offset:1+offset+limit]:
+            if row:self.master_snapshots[(table,row[0])]=row_dict(rows[0],row)
         return {'table':table,'headers':rows[0] if rows else [],'rows':rows[1+offset:1+offset+limit],
                 'total':max(0,len(rows)-1),'source':'Master'}
+
+    async def workflow_update_master(self,updates,reason):
+        await self.rights(owner=True)
+        bridge=self.a.workflow_bridge
+        if bridge is None or self.uid!=bridge.owner or self.chat!=bridge.owner:
+            raise ValueError('Зміни Master доступні лише Павлу в особистому чаті.')
+        source=f'telegram:{self.uid}:{self.event_id}'
+        result=await self.a.sheet(apply_updates,bridge.master,updates,reason,source,self.master_snapshots)
+        self.cache.clear()
+        return result
 
     async def prepare_gmail_reply(self,message_id,body):
         await self.rights(owner=True)
